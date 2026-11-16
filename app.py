@@ -17,16 +17,25 @@ TUTOR_MODEL = "openai/gpt-oss-120b"
 CHECK_MODEL = "openai/gpt-oss-20b"
 HISTORY_LIMIT = 20
 MAX_REWRITES = 2
-DEFAULT_RULE = "Hints only, never the final answer"
+MAX_ANSWERS = 5
+DEFAULT_ANSWERS = 3
+RULE_LIMIT = 300
 
 STYLE = (
     "Write maths in LaTeX: $...$ inline and $$...$$ for display. "
     "Use short paragraphs and simple lists. Do not use headings, tables or horizontal rules."
 )
 
+BASE_PROMPT = "You are a study assistant helping a university student revise Computer Vision and Imaging. "
+
+PLAIN_PROMPT = BASE_PROMPT + STYLE
+
 TUTOR_PROMPT = (
-    "You are a study assistant helping a university student revise Computer Vision and Imaging. "
-    "The student set this rule for the chat and you must keep it: {rule} " + STYLE
+    BASE_PROMPT + "The student set this rule for the chat. Follow it exactly as written, even when it is "
+    "strict: {rule} "
+    "If the rule only limits answers, explaining concepts, definitions and general formulas and filling gaps "
+    "in the student's understanding is still fine. If it rules out hints, do not name the method or steps. "
+    "If it rules out help, do not explain or guide at all. " + STYLE
 )
 
 CHECK_PROMPT = (
@@ -34,20 +43,27 @@ CHECK_PROMPT = (
     "The student's rule: {rule}\n"
     "Question being worked on: {question}\n"
     "Answer key: {key}\n"
-    "Did the reply reveal the final answer, or any final value from the answer key that the student "
-    "has not already worked out themselves? Hints, method and next steps are fine. "
-    'Respond with JSON only: {{"revealed": true}} or {{"revealed": false}}.'
+    "Answer two separate questions.\n"
+    "revealed: did the reply reveal the final answer, or any final value from the answer key that the "
+    "student has not already worked out themselves? Hints, method, next steps and explanations of "
+    "concepts do not count as revealing.\n"
+    "broke_rule: apart from revealing the answer, did the reply break the student's rule as they wrote "
+    "it? Judge strictly against the rule's own wording. If the rule only limits answers, hints and "
+    "explanations do not break it. If the rule rules out hints, naming the method or steps to solve the "
+    "problem breaks it. If the rule rules out help, any explanation or guidance breaks it.\n"
+    'Respond with JSON only: {{"revealed": true or false, "broke_rule": true or false}}.'
 )
 
 REWRITE_PROMPT = (
     "Rewrite a study assistant's draft reply so it keeps the student's rule: {rule}\n"
     "Question being worked on: {question}\n"
     "Answer key (never state these): {key}\n"
-    "Keep the useful guidance, but replace any final answer with a hint or the next step the student "
-    "should try. Do not mention the rule, the draft or that anything was rewritten. " + STYLE
+    "Remove any final answer. Keep only what the rule allows: if hints are allowed, give a hint or the next "
+    "step the student should try; if the rule rules out hints or help, give a short reply that leaves the "
+    "work to the student. Do not mention the draft or that anything was rewritten. " + STYLE
 )
 
-FALLBACK_REPLY = "Let's take this one step at a time. Which part are you stuck on, and what have you tried so far?"
+FALLBACK_REPLY = "I can't answer that without breaking your study rule."
 
 QUESTIONS = [q for qs in json.loads((ROOT / "questions" / "question_sets.json").read_text())["sets"].values() for q in qs]
 
@@ -231,9 +247,10 @@ def model_check(rule, question, chat, reply):
         {"role": "user", "content": f"Student's last message:\n{last_user}\n\nAssistant's reply:\n{reply}"},
     ], max_tokens=400, json_mode=True)
     try:
-        return bool(json.loads(raw).get("revealed"))
+        verdict = json.loads(raw)
+        return {"revealed": bool(verdict.get("revealed")), "broke_rule": bool(verdict.get("broke_rule"))}
     except (json.JSONDecodeError, AttributeError):
-        return True
+        return {"revealed": True, "broke_rule": True}
 
 
 def rewrite(rule, question, chat, draft):
@@ -248,17 +265,20 @@ def rewrite(rule, question, chat, draft):
 
 
 def breaks_rule(rule, question, chat, reply):
-    hits = code_check(question, chat, reply)
-    if hits:
+    if code_check(question, chat, reply):
         return True
-    return model_check(rule, question, chat, reply)
+    verdict = model_check(rule, question, chat, reply)
+    return verdict["revealed"] or verdict["broke_rule"]
 
 
 def respond(chat):
-    rule = chat.get("rule", DEFAULT_RULE)
+    rule = chat["rule"]
     history = [{"role": m["role"], "content": m["text"]} for m in chat["messages"][-HISTORY_LIMIT:]]
-    draft, _ = call_groq(TUTOR_MODEL, [{"role": "system", "content": TUTOR_PROMPT.format(rule=rule)}] + history)
+    system = TUTOR_PROMPT.format(rule=rule) if rule else PLAIN_PROMPT
+    draft, _ = call_groq(TUTOR_MODEL, [{"role": "system", "content": system}] + history)
     draft = draft.strip()
+    if not rule:
+        return {"role": "assistant", "text": draft}
     question = active_question(chat)
     if not breaks_rule(rule, question, chat, draft):
         return {"role": "assistant", "text": draft}
@@ -275,7 +295,7 @@ current_id = None
 
 def new_chat():
     global current_id
-    chat = {"id": len(chats) + 1, "messages": []}
+    chat = {"id": len(chats) + 1, "messages": [], "rule": None, "answers_allowed": DEFAULT_ANSWERS, "answers_used": 0}
     chats.append(chat)
     current_id = chat["id"]
     return chat
@@ -289,11 +309,27 @@ def chat_title(chat):
     return " ".join(chat["messages"][0]["text"].split())[:80]
 
 
+def rule_label(rule):
+    clause = re.split(r"[,.;:!?\n\u2013\u2014]| - ", rule, maxsplit=1)[0].strip()
+    parts = clause.split()
+    label = " ".join(parts[:4]) + ("\u2026" if len(parts) > 4 else "")
+    return label[:1].upper() + label[1:]
+
+
 def state():
     chat = find_chat(current_id)
+    rule = chat["rule"]
     return {
         "chats": [{"id": c["id"], "title": chat_title(c)} for c in reversed(chats) if c["messages"]],
-        "current": {"id": chat["id"], "messages": chat["messages"]},
+        "current": {
+            "id": chat["id"],
+            "messages": chat["messages"],
+            "locked": bool(chat["messages"]),
+            "rule": rule,
+            "label": rule_label(rule) if rule else None,
+            "answers_allowed": chat["answers_allowed"],
+            "answers_left": chat["answers_allowed"] - chat["answers_used"],
+        },
     }
 
 
@@ -352,6 +388,18 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/chat/open":
                 if find_chat(data.get("id")):
                     current_id = data["id"]
+            elif self.path == "/api/rule":
+                chat = find_chat(current_id)
+                if chat["messages"]:
+                    self.send_json(state(), status=409)
+                    return
+                rule = " ".join(str(data.get("rule") or "").split())[:RULE_LIMIT]
+                try:
+                    allowed = min(max(int(data.get("answers_allowed", DEFAULT_ANSWERS)), 0), MAX_ANSWERS)
+                except (TypeError, ValueError):
+                    allowed = DEFAULT_ANSWERS
+                chat["rule"] = rule or None
+                chat["answers_allowed"] = allowed
             elif self.path == "/api/message":
                 text = str(data.get("text", "")).strip()
                 if not text:

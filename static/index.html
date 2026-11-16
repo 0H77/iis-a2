@@ -27,8 +27,13 @@
     </div>
 
     <div class="composer-wrap">
+      <div class="menu" id="menu" role="menu" aria-label="Add" hidden>
+        <button type="button" class="menu-item" role="menuitem" id="menu-rule">
+          <span>Study rule</span><span class="menu-detail" id="menu-rule-detail">Off</span>
+        </button>
+      </div>
       <form class="composer" id="composer" autocomplete="off">
-        <button type="button" class="icon-button" aria-label="Add" aria-expanded="false">
+        <button type="button" class="icon-button" id="plus" aria-label="Add" aria-haspopup="menu" aria-expanded="false">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
         </button>
         <label for="msg" class="visually-hidden">Message</label>
@@ -37,6 +42,28 @@
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"></path></svg>
         </button>
       </form>
+      <p class="status" id="status" hidden></p>
+    </div>
+
+    <div class="dialog-layer" id="dialog" hidden>
+      <div class="scrim" id="scrim"></div>
+      <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+        <div class="dialog-head">
+          <h2 id="dialog-title">Study rule</h2>
+          <p>How should the assistant help you in this chat?</p>
+        </div>
+        <label for="rule" class="visually-hidden">Your rule</label>
+        <textarea id="rule" rows="3" maxlength="300" placeholder="e.g. Hints only"></textarea>
+        <div class="answers">
+          <span id="answers-label">Answers allowed</span>
+          <div role="radiogroup" aria-labelledby="answers-label" id="answers"></div>
+        </div>
+        <p class="dialog-note">You can't change this once you start chatting.</p>
+        <div class="dialog-buttons">
+          <button type="button" class="button-secondary" id="rule-cancel">Cancel</button>
+          <button type="button" class="button-primary" id="rule-start" disabled>Start</button>
+        </div>
+      </section>
     </div>
   </main>
 </div>

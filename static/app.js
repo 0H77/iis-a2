@@ -8,7 +8,23 @@ const els = {
   composer: document.getElementById("composer"),
   input: document.getElementById("msg"),
   send: document.querySelector(".send"),
+  plus: document.getElementById("plus"),
+  menu: document.getElementById("menu"),
+  menuRule: document.getElementById("menu-rule"),
+  menuRuleDetail: document.getElementById("menu-rule-detail"),
+  status: document.getElementById("status"),
+  dialog: document.getElementById("dialog"),
+  scrim: document.getElementById("scrim"),
+  rule: document.getElementById("rule"),
+  answers: document.getElementById("answers"),
+  ruleCancel: document.getElementById("rule-cancel"),
+  ruleStart: document.getElementById("rule-start"),
 };
+
+const MAX_ANSWERS = 5;
+
+let current = null;
+let chosenAnswers = 3;
 
 const CHECK_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg>';
 
@@ -67,13 +83,37 @@ function formatReply(text) {
       const body = lines.slice(2).map((l) => `<tr>${cells(l).map((c) => `<td>${c}</td>`).join("")}</tr>`).join("");
       return `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
     }
-    if (lines.every((l) => /^\s*[-*•]\s+/.test(l))) {
-      return `<ul>${lines.map((l) => `<li>${inline(l.replace(/^\s*[-*•]\s+/, ""))}</li>`).join("")}</ul>`;
+    const out = [];
+    let para = [];
+    let list = null;
+    const flushPara = () => {
+      if (para.length) out.push(`<p>${para.map(inline).join("<br>")}</p>`);
+      para = [];
+    };
+    const flushList = () => {
+      if (list) out.push(`<${list.tag}>${list.items.map((i) => `<li>${inline(i)}</li>`).join("")}</${list.tag}>`);
+      list = null;
+    };
+    for (const line of lines) {
+      const bullet = line.match(/^\s*[-*•]\s+(.*)$/);
+      const number = line.match(/^\s*\d+[.)]\s+(.*)$/);
+      const item = bullet || number;
+      if (item) {
+        const tag = bullet ? "ul" : "ol";
+        flushPara();
+        if (list && list.tag !== tag) flushList();
+        if (!list) list = { tag, items: [] };
+        list.items.push(item[1]);
+      } else if (list && /^\s{2,}\S/.test(line)) {
+        list.items[list.items.length - 1] += ` ${line.trim()}`;
+      } else {
+        flushList();
+        para.push(line);
+      }
     }
-    if (lines.every((l) => /^\s*\d+[.)]\s+/.test(l))) {
-      return `<ol>${lines.map((l) => `<li>${inline(l.replace(/^\s*\d+[.)]\s+/, ""))}</li>`).join("")}</ol>`;
-    }
-    return `<p>${lines.map(inline).join("<br>")}</p>`;
+    flushPara();
+    flushList();
+    return out.join("");
   }).join("");
 }
 
@@ -196,8 +236,82 @@ function noteNode(className, text) {
   return div;
 }
 
+function statusText(chat) {
+  const label = chat.label.endsWith("\u2026") ? chat.label : `${chat.label}.`;
+  if (chat.answers_allowed === 0) return `${label} No answers allowed.`;
+  return `${label} ${chat.answers_left}/${chat.answers_allowed} answers left.`;
+}
+
+function renderControls(chat, locked) {
+  els.status.hidden = !chat.rule;
+  if (chat.rule) {
+    els.status.textContent = statusText(chat);
+    els.status.title = chat.rule;
+  }
+  els.menuRule.hidden = locked;
+  els.menuRuleDetail.textContent = chat.label || "Off";
+  els.plus.disabled = locked;
+  if (locked) closeMenu();
+}
+
+function openMenu() {
+  els.menu.hidden = false;
+  els.plus.setAttribute("aria-expanded", "true");
+  els.menu.querySelector(".menu-item:not([hidden])")?.focus();
+}
+
+function closeMenu() {
+  els.menu.hidden = true;
+  els.plus.setAttribute("aria-expanded", "false");
+}
+
+function renderAnswerOptions() {
+  els.answers.replaceChildren(...Array.from({ length: MAX_ANSWERS + 1 }, (_, n) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "answer-option";
+    button.setAttribute("role", "radio");
+    button.setAttribute("aria-checked", String(n === chosenAnswers));
+    button.tabIndex = n === chosenAnswers ? 0 : -1;
+    button.textContent = n;
+    button.addEventListener("click", () => {
+      chosenAnswers = n;
+      renderAnswerOptions();
+      els.answers.children[n].focus();
+    });
+    button.addEventListener("keydown", (event) => {
+      const step = { ArrowRight: 1, ArrowUp: 1, ArrowLeft: -1, ArrowDown: -1 }[event.key];
+      if (!step) return;
+      event.preventDefault();
+      chosenAnswers = Math.min(MAX_ANSWERS, Math.max(0, chosenAnswers + step));
+      renderAnswerOptions();
+      els.answers.children[chosenAnswers].focus();
+    });
+    return button;
+  }));
+}
+
+function updateStart() {
+  els.ruleStart.disabled = els.rule.value.trim() === "";
+}
+
+function openDialog() {
+  closeMenu();
+  els.rule.value = current.rule || "";
+  chosenAnswers = current.answers_allowed;
+  renderAnswerOptions();
+  updateStart();
+  els.dialog.hidden = false;
+  els.rule.focus();
+}
+
+function closeDialog() {
+  els.dialog.hidden = true;
+  els.input.focus();
+}
+
 function render(state, options = {}) {
-  const { current } = state;
+  current = state.current;
 
   els.recentLabel.hidden = state.chats.length === 0;
   els.recent.replaceChildren(...state.chats.map((chat) => {
@@ -221,6 +335,7 @@ function render(state, options = {}) {
   if (options.pending) nodes.push(messageNode({ role: "user", text: options.pending }), noteNode("thinking", "Thinking…"));
   if (state.error) nodes.push(noteNode("error", state.error));
   els.messages.replaceChildren(...nodes);
+  renderControls(current, current.locked || Boolean(options.pending));
 
   els.thread.scrollTop = els.thread.scrollHeight;
   updateSend();
@@ -232,6 +347,31 @@ function updateSend() {
 }
 
 els.input.addEventListener("input", updateSend);
+
+els.plus.addEventListener("click", () => (els.menu.hidden ? openMenu() : closeMenu()));
+els.menuRule.addEventListener("click", openDialog);
+els.rule.addEventListener("input", updateStart);
+els.ruleCancel.addEventListener("click", closeDialog);
+els.scrim.addEventListener("click", closeDialog);
+
+els.ruleStart.addEventListener("click", async () => {
+  const response = await api("/api/rule", { rule: els.rule.value, answers_allowed: chosenAnswers });
+  render(response);
+  closeDialog();
+});
+
+document.addEventListener("click", (event) => {
+  if (!els.menu.hidden && !els.menu.contains(event.target) && !els.plus.contains(event.target)) closeMenu();
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (!els.dialog.hidden) closeDialog();
+  else if (!els.menu.hidden) {
+    closeMenu();
+    els.plus.focus();
+  }
+});
 
 els.composer.addEventListener("submit", async (event) => {
   event.preventDefault();
