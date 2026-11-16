@@ -403,9 +403,37 @@ button { font: inherit; cursor: pointer; }
   clip: rect(0 0 0 0);
 }
 
+.rail-toggle {
+  align-self: flex-start;
+  width: 40px;
+  height: 36px;
+  margin-bottom: 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rail-toggle:hover { background: var(--rail-active); color: var(--text); }
+
+.app.collapsed .rail { flex-basis: 56px; padding: 12px 8px; }
+.app.collapsed .rail-text, .app.collapsed .rail-label, .app.collapsed .recent { display: none; }
+.app.collapsed .new-chat { width: 40px; padding: 0; justify-content: center; }
+.app.collapsed .rail-toggle { align-self: center; }
+
 @media (max-width: 720px) {
-  .rail { display: none; }
   .main { padding: 20px 16px 16px; }
+  .app:not(.collapsed) .rail {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: 260px;
+    z-index: 20;
+    box-shadow: 0 0 32px rgba(0, 0, 0, 0.5);
+  }
+  .app:not(.collapsed) .main { margin-left: 56px; }
 }
 
 .menu-item[hidden] { display: none; }

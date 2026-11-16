@@ -45,6 +45,33 @@ let attachment = null;
 const expanded = new Set();
 
 const MAX_ANSWERS = 5;
+const app = document.getElementById("app");
+const railToggle = document.getElementById("rail-toggle");
+
+function readSidebarPref() {
+  try {
+    return localStorage.getItem("sidebar");
+  } catch {
+    return null;
+  }
+}
+
+function setSidebar(open, remember) {
+  app.classList.toggle("collapsed", !open);
+  const label = open ? "Close sidebar" : "Open sidebar";
+  railToggle.setAttribute("aria-label", label);
+  railToggle.title = label;
+  railToggle.setAttribute("aria-expanded", String(open));
+  if (remember) {
+    try {
+      localStorage.setItem("sidebar", open ? "open" : "closed");
+    } catch {}
+  }
+}
+
+const narrow = window.matchMedia("(max-width: 720px)");
+setSidebar(narrow.matches ? false : readSidebarPref() !== "closed", false);
+railToggle.addEventListener("click", () => setSidebar(app.classList.contains("collapsed"), !narrow.matches));
 
 let current = null;
 let chosenAnswers = 3;
