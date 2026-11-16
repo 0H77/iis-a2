@@ -10,6 +10,8 @@ const els = {
   send: document.querySelector(".send"),
 };
 
+const CHECK_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg>';
+
 const COPY_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15V5a2 2 0 0 1 2-2h8"></path></svg>';
 
 let waiting = false;
@@ -59,6 +61,12 @@ function formatReply(text) {
   return blocks.map((block) => {
     const lines = block.split("\n").filter((l) => !/^\s*[-*_]{3,}\s*$/.test(l));
     if (/^\u0000\d+\u0000$/.test(block)) return restore(block);
+    if (lines.length >= 2 && lines.every((l) => /^\s*\|.*\|\s*$/.test(l)) && /^\s*\|[\s:|-]+\|\s*$/.test(lines[1])) {
+      const cells = (l) => l.trim().slice(1, -1).split("|").map((c) => inline(c));
+      const head = cells(lines[0]).map((c) => `<th>${c}</th>`).join("");
+      const body = lines.slice(2).map((l) => `<tr>${cells(l).map((c) => `<td>${c}</td>`).join("")}</tr>`).join("");
+      return `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+    }
     if (lines.every((l) => /^\s*[-*•]\s+/.test(l))) {
       return `<ul>${lines.map((l) => `<li>${inline(l.replace(/^\s*[-*•]\s+/, ""))}</li>`).join("")}</ul>`;
     }
@@ -127,6 +135,23 @@ function reveal(root) {
   });
 }
 
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.append(area);
+    area.select();
+    const ok = document.execCommand("copy");
+    area.remove();
+    return ok;
+  }
+}
+
 function assistantNode(message) {
   const wrap = document.createElement("div");
   wrap.className = "assistant";
@@ -141,7 +166,16 @@ function assistantNode(message) {
   copy.setAttribute("aria-label", "Copy");
   copy.title = "Copy";
   copy.innerHTML = COPY_ICON;
-  copy.addEventListener("click", () => navigator.clipboard?.writeText(message.text));
+  copy.addEventListener("click", async () => {
+    if (await copyText(message.text)) {
+      copy.innerHTML = CHECK_ICON;
+      copy.title = "Copied";
+      setTimeout(() => {
+        copy.innerHTML = COPY_ICON;
+        copy.title = "Copy";
+      }, 1500);
+    }
+  });
   actions.append(copy);
   wrap.append(body, actions);
   return wrap;

@@ -1,6 +1,7 @@
 import json
 import mimetypes
 import os
+import re
 import threading
 import urllib.error
 import urllib.request
@@ -13,13 +14,42 @@ PORT = 8000
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 TUTOR_MODEL = "openai/gpt-oss-120b"
+CHECK_MODEL = "openai/gpt-oss-20b"
 HISTORY_LIMIT = 20
+MAX_REWRITES = 2
+DEFAULT_RULE = "Hints only, never the final answer"
 
-TUTOR_PROMPT = (
-    "You are a study assistant helping a university student revise Computer Vision and Imaging. "
+STYLE = (
     "Write maths in LaTeX: $...$ inline and $$...$$ for display. "
     "Use short paragraphs and simple lists. Do not use headings, tables or horizontal rules."
 )
+
+TUTOR_PROMPT = (
+    "You are a study assistant helping a university student revise Computer Vision and Imaging. "
+    "The student set this rule for the chat and you must keep it: {rule} " + STYLE
+)
+
+CHECK_PROMPT = (
+    "You check one reply from a study assistant before the student sees it. "
+    "The student's rule: {rule}\n"
+    "Question being worked on: {question}\n"
+    "Answer key: {key}\n"
+    "Did the reply reveal the final answer, or any final value from the answer key that the student "
+    "has not already worked out themselves? Hints, method and next steps are fine. "
+    'Respond with JSON only: {{"revealed": true}} or {{"revealed": false}}.'
+)
+
+REWRITE_PROMPT = (
+    "Rewrite a study assistant's draft reply so it keeps the student's rule: {rule}\n"
+    "Question being worked on: {question}\n"
+    "Answer key (never state these): {key}\n"
+    "Keep the useful guidance, but replace any final answer with a hint or the next step the student "
+    "should try. Do not mention the rule, the draft or that anything was rewritten. " + STYLE
+)
+
+FALLBACK_REPLY = "Let's take this one step at a time. Which part are you stuck on, and what have you tried so far?"
+
+QUESTIONS = [q for qs in json.loads((ROOT / "questions" / "question_sets.json").read_text())["sets"].values() for q in qs]
 
 
 def load_env():
@@ -36,7 +66,7 @@ class ModelError(Exception):
     pass
 
 
-def call_groq(model, messages, max_tokens=1500):
+def call_groq(model, messages, max_tokens=1500, json_mode=False):
     key = os.environ.get("GROQ_API_KEY")
     if not key:
         raise ModelError("No Groq API key found. Add GROQ_API_KEY to the .env file and restart.")
@@ -46,6 +76,8 @@ def call_groq(model, messages, max_tokens=1500):
         "reasoning_effort": "low",
         "max_completion_tokens": max_tokens,
     }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
     request = urllib.request.Request(
         GROQ_URL,
         data=json.dumps(payload).encode(),
@@ -62,10 +94,179 @@ def call_groq(model, messages, max_tokens=1500):
     return data["choices"][0]["message"].get("content") or "", data.get("usage", {})
 
 
-def tutor_reply(chat):
+def words(text):
+    return set(re.findall(r"[a-z]+|\d+", text.lower()))
+
+
+def match_question(text):
+    target = words(text)
+    best, best_score = None, 0.0
+    for q in QUESTIONS:
+        qwords = words(q["question"])
+        score = len(target & qwords) / max(len(qwords), 1)
+        if score > best_score:
+            best, best_score = q, score
+    return best if best_score >= 0.6 else None
+
+
+def active_question(chat):
+    for m in reversed(chat["messages"]):
+        if m["role"] == "user":
+            q = match_question(m["text"])
+            if q:
+                return q
+    return None
+
+
+NUMBER = r"-?\d+(?:,\d{3})*(?:\.\d+)?(?:/\d+(?:\.\d+)?)?"
+
+
+def normalise(text):
+    text = text.replace("\u2212", "-").replace("\u2013", "-")
+    text = re.sub(r"\\[dt]?frac\s*\{\s*(-?[\d.]+)\s*\}\s*\{\s*([\d.]+)\s*\}", r"\1/\2", text)
+    text = re.sub(r"\\[,;:!]|\{,\}|\\left|\\right", "", text)
+    return text
+
+
+def to_value(token):
+    token = token.replace(",", "")
+    if "/" in token:
+        top, bottom = token.split("/", 1)
+        return float(top) / float(bottom) if float(bottom) else None
+    return float(token)
+
+
+def numbers_in(text):
+    values = []
+    for token in re.findall(NUMBER, normalise(text)):
+        try:
+            value = to_value(token)
+        except ValueError:
+            continue
+        if value is not None:
+            decimals = len(token.split(".")[1]) if "." in token and "/" not in token else None
+            values.append((value, decimals))
+    return values
+
+
+def collect(value, out):
+    if isinstance(value, dict):
+        for v in value.values():
+            collect(v, out)
+    elif isinstance(value, list):
+        for v in value:
+            collect(v, out)
+    elif isinstance(value, bool):
+        return
+    elif isinstance(value, (int, float)):
+        out.append(float(value))
+    elif isinstance(value, str):
+        out.extend(v for v, _ in numbers_in(value))
+
+
+def same(key, found, decimals):
+    if decimals:
+        return round(key, decimals) == round(found, decimals)
+    return abs(key - found) <= 1e-6 * max(1.0, abs(key))
+
+
+def key_values(question, chat):
+    if question["type"] != "calculation":
+        return []
+    values = []
+    collect(question["answer"], values)
+    known = [v for v, _ in numbers_in(question["question"])]
+    for m in chat["messages"]:
+        if m["role"] == "user":
+            known.extend(v for v, _ in numbers_in(m["text"]))
+    finals = []
+    for v in values:
+        if v in (0.0, 1.0) or any(same(v, k, None) for k in known):
+            continue
+        if not any(same(v, f, None) for f in finals):
+            finals.append(v)
+    return finals
+
+
+def option_leak(question, reply):
+    if question["type"] != "concept":
+        return False
+    letter = question["answer"]["option"]
+    text = normalise(reply)
+    patterns = [
+        rf"\b(?:answer|option|choice)\s*(?:is|:)?\s*\(?\**{letter}\**\)?(?![A-Za-z])",
+        rf"\*\*\(?{letter}\)?[).:]?\*\*",
+        rf"^\s*\(?{letter}\)\s",
+    ]
+    if any(re.search(p, text, re.MULTILINE) for p in patterns):
+        return True
+    answer_text = question["answer"]["text"].lower()
+    return len(answer_text.split()) >= 3 and answer_text in text.lower()
+
+
+def code_check(question, chat, reply):
+    if not question:
+        return []
+    hits = []
+    found = numbers_in(reply)
+    for v in key_values(question, chat):
+        if any(same(v, f, d) for f, d in found):
+            hits.append(v)
+    if option_leak(question, reply):
+        hits.append(question["answer"]["option"])
+    return hits
+
+
+def describe(question):
+    if not question:
+        return "unknown", "not available"
+    return question["question"], json.dumps(question["answer"])
+
+
+def model_check(rule, question, chat, reply):
+    text, key = describe(question)
+    last_user = next((m["text"] for m in reversed(chat["messages"]) if m["role"] == "user"), "")
+    raw, _ = call_groq(CHECK_MODEL, [
+        {"role": "system", "content": CHECK_PROMPT.format(rule=rule, question=text, key=key)},
+        {"role": "user", "content": f"Student's last message:\n{last_user}\n\nAssistant's reply:\n{reply}"},
+    ], max_tokens=400, json_mode=True)
+    try:
+        return bool(json.loads(raw).get("revealed"))
+    except (json.JSONDecodeError, AttributeError):
+        return True
+
+
+def rewrite(rule, question, chat, draft):
+    text, key = describe(question)
+    history = [{"role": m["role"], "content": m["text"]} for m in chat["messages"][-6:]]
+    out, _ = call_groq(TUTOR_MODEL, [
+        {"role": "system", "content": REWRITE_PROMPT.format(rule=rule, question=text, key=key)},
+        *history,
+        {"role": "user", "content": f"Draft reply to rewrite:\n{draft}"},
+    ])
+    return out.strip()
+
+
+def breaks_rule(rule, question, chat, reply):
+    hits = code_check(question, chat, reply)
+    if hits:
+        return True
+    return model_check(rule, question, chat, reply)
+
+
+def respond(chat):
+    rule = chat.get("rule", DEFAULT_RULE)
     history = [{"role": m["role"], "content": m["text"]} for m in chat["messages"][-HISTORY_LIMIT:]]
-    text, _ = call_groq(TUTOR_MODEL, [{"role": "system", "content": TUTOR_PROMPT}] + history)
-    return text.strip()
+    draft, _ = call_groq(TUTOR_MODEL, [{"role": "system", "content": TUTOR_PROMPT.format(rule=rule)}] + history)
+    draft = draft.strip()
+    question = active_question(chat)
+    if not breaks_rule(rule, question, chat, draft):
+        return {"role": "assistant", "text": draft}
+    for _ in range(MAX_REWRITES):
+        candidate = rewrite(rule, question, chat, draft)
+        if candidate and not breaks_rule(rule, question, chat, candidate):
+            return {"role": "assistant", "text": candidate, "rewritten": True}
+    return {"role": "assistant", "text": FALLBACK_REPLY, "rewritten": True}
 
 lock = threading.Lock()
 chats = []
@@ -165,13 +366,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(state())
                 return
         try:
-            reply = tutor_reply(chat)
+            reply = respond(chat)
             error = None
         except ModelError as exc:
             reply, error = None, str(exc)
         with lock:
             if reply:
-                chat["messages"].append({"role": "assistant", "text": reply})
+                chat["messages"].append(reply)
             result = state()
             result["error"] = error
             self.send_json(result)

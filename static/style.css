@@ -145,6 +145,18 @@ button { font: inherit; cursor: pointer; }
 .reply .katex { font-size: 1.08em; }
 .reply .katex-display { margin: 8px 0; overflow-x: auto; overflow-y: hidden; }
 
+.table-wrap { overflow-x: auto; margin: 0 0 12px; }
+
+.reply table { border-collapse: collapse; font-size: 15px; }
+
+.reply th, .reply td {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+.reply th { font-weight: 700; }
+
 .hidden-unit { opacity: 0; }
 
 .actions { display: flex; gap: 2px; margin-left: -6px; }
