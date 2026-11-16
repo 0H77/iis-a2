@@ -123,7 +123,7 @@ class ModelError(Exception):
     pass
 
 
-RATE_LIMIT_WAIT = 20
+RATE_LIMIT_WAIT = 60
 
 
 def call_groq(model, messages, max_tokens=1500, json_mode=False):
@@ -362,11 +362,23 @@ def option_leak(question, reply):
     return len(answer_text.split()) >= 3 and answer_text in text.lower()
 
 
+LABELLED_NUMBER = re.compile(
+    r"\b(?:node|step|stage|question|layer|part|row|column|col|box|line|pass|iteration|round|case|item|level)s?"
+    r"\s*#?\s*\d+(?:\s*(?:-|to|and|,)\s*\d+)*",
+    re.IGNORECASE,
+)
+LIST_MARKER = re.compile(r"^\s*(?:\d+[.)]|\(\d+\))\s+", re.MULTILINE)
+
+
+def strip_labels(text):
+    return LIST_MARKER.sub(" ", LABELLED_NUMBER.sub(" ", text))
+
+
 def code_check(question, chat, reply):
     if not question:
         return []
     hits = []
-    found = numbers_in(reply)
+    found = numbers_in(strip_labels(reply))
     for v, label in key_values(question, chat):
         if any(same(v, f, d) for f, d in found):
             name = (label or "answer").replace("_", " ")
@@ -680,7 +692,10 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--checker", choices=["on", "off"], default="on")
-    CHECKER_ON = parser.parse_args().checker == "on"
+    parser.add_argument("--port", type=int, default=PORT)
+    args = parser.parse_args()
+    CHECKER_ON = args.checker == "on"
+    PORT = args.port
     load_env()
     new_chat()
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
