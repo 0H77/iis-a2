@@ -121,11 +121,54 @@ button { font: inherit; cursor: pointer; }
 
 .new-chat[aria-current="page"] { background: var(--rail-active); }
 
-.assistant p {
-  margin: 0;
+.assistant { display: flex; flex-direction: column; gap: 6px; }
+
+.reply {
   font-size: 16px;
   line-height: 1.7;
+  overflow-wrap: anywhere;
 }
+
+.reply p, .reply ul, .reply ol { margin: 0 0 12px; }
+.reply > :last-child { margin-bottom: 0; }
+.reply ul, .reply ol { padding-left: 24px; }
+.reply li + li { margin-top: 4px; }
+
+.reply code {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 0.9em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bubble);
+}
+
+.reply .katex { font-size: 1.08em; }
+.reply .katex-display { margin: 8px 0; overflow-x: auto; overflow-y: hidden; }
+
+.hidden-unit { opacity: 0; }
+
+.actions { display: flex; gap: 2px; margin-left: -6px; }
+
+.action {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.action:hover { background: var(--bubble); color: var(--text); }
+
+.thinking {
+  font-size: 16px;
+  color: var(--muted);
+}
+
+.error { font-size: 14px; color: var(--muted); }
 
 .messages { display: flex; flex-direction: column; gap: 28px; }
 
