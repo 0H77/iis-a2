@@ -490,3 +490,46 @@ button { font: inherit; cursor: pointer; }
 .full-answer-label { font-size: 12px; font-weight: 700; color: #A9C1F5; }
 
 .menu-tip-wrap .menu-item { width: 100%; }
+
+.action[aria-pressed="true"] { color: var(--text); }
+
+.rewrite { display: flex; flex-direction: column; gap: 10px; }
+
+.rewrite-toggle {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #E0B65C;
+  font-size: 14px;
+}
+
+.rewrite-toggle[aria-expanded="true"] svg { transform: rotate(90deg); }
+
+.rewrite-details {
+  padding: 2px 0 2px 14px;
+  border-left: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.rewrite-details[hidden] { display: none; }
+
+.rewrite-ask { display: inline-flex; align-items: center; gap: 4px; }
+
+.hidden-value {
+  display: inline-block;
+  width: 22px;
+  height: 11px;
+  background: #555A63;
+  border-radius: 3px;
+  vertical-align: middle;
+}

@@ -36,7 +36,13 @@ const els = {
 const FILE_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"></path><path d="M14 3v5h5"></path></svg>';
 const UPLOAD_LIMIT = 30000;
 
+const THUMB_UP = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 11v9H4v-9h3z"></path><path d="M7 11l4-7a2 2 0 0 1 3 2l-1 4h5a2 2 0 0 1 2 2l-1.5 6a2 2 0 0 1-2 2H7"></path></svg>';
+const THUMB_DOWN = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 13V4h3v9h-3z"></path><path d="M17 13l-4 7a2 2 0 0 1-3-2l1-4H6a2 2 0 0 1-2-2l1.5-6a2 2 0 0 1 2-2H17"></path></svg>';
+const REGENERATE_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"></path><path d="M20 4v7h-7"></path></svg>';
+const CHEVRON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>';
+
 let attachment = null;
+const expanded = new Set();
 
 const MAX_ANSWERS = 5;
 
@@ -209,21 +215,91 @@ async function copyText(text) {
   }
 }
 
-function assistantNode(message) {
+function iconButton(icon, label, onClick) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "action";
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  button.innerHTML = icon;
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function thumbs(index, kind, value, labels) {
+  return [["up", THUMB_UP, labels[0]], ["down", THUMB_DOWN, labels[1]]].map(([v, icon, label]) => {
+    const button = iconButton(icon, label, async () => {
+      if (waiting) return;
+      render(await api("/api/feedback", { index, kind, value: value === v ? null : v }));
+    });
+    button.setAttribute("aria-pressed", String(value === v));
+    return button;
+  });
+}
+
+function hiddenValue() {
+  const span = document.createElement("span");
+  span.className = "hidden-value";
+  span.setAttribute("aria-label", "hidden value");
+  return span;
+}
+
+function rewriteNote(message, index) {
+  const key = `${current.id}:${index}`;
+  const wrap = document.createElement("div");
+  wrap.className = "rewrite";
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "rewrite-toggle";
+  toggle.setAttribute("aria-expanded", String(expanded.has(key)));
+  toggle.innerHTML = `<span>Rewrote this reply to keep your rule</span>${CHEVRON}`;
+  const details = document.createElement("div");
+  details.className = "rewrite-details";
+  details.hidden = !expanded.has(key);
+  toggle.addEventListener("click", () => {
+    if (expanded.has(key)) expanded.delete(key);
+    else expanded.add(key);
+    toggle.setAttribute("aria-expanded", String(expanded.has(key)));
+    details.hidden = !expanded.has(key);
+  });
+
+  const reason = message.reason || { code: [], revealed: true, broke_rule: false };
+  const what = document.createElement("span");
+  if (reason.code.length) {
+    what.append(reason.code.length > 1 ? "The first draft gave the final answers: " : "The first draft gave the final answer: ");
+    reason.code.forEach((label, i) => {
+      if (i) what.append(", ");
+      what.append(`${label} = `, hiddenValue());
+    });
+  } else if (reason.revealed) {
+    what.textContent = "The first draft gave away the final answer.";
+  } else {
+    what.textContent = "The first draft didn't keep to your rule.";
+  }
+  const why = document.createElement("span");
+  why.textContent = reason.code.length
+    ? "It matched the answer key and broke your rule, so it was rewritten."
+    : reason.revealed
+      ? "The checker judged that it revealed the answer, so it was rewritten."
+      : "The checker judged that it broke your rule, so it was rewritten.";
+  const ask = document.createElement("span");
+  ask.className = "rewrite-ask";
+  ask.append("Was this rewrite right?", ...thumbs(index, "rewrite", message.feedback?.rewrite, ["Yes, the rewrite was right", "No, the rewrite was wrong"]));
+  details.append(what, why, ask);
+  wrap.append(toggle, details);
+  return wrap;
+}
+
+function assistantNode(message, index, isLast) {
   const wrap = document.createElement("div");
   wrap.className = "assistant";
+  if (message.rewritten) wrap.append(rewriteNote(message, index));
   const body = document.createElement("div");
   body.className = "reply";
   body.innerHTML = formatReply(message.text);
   const actions = document.createElement("div");
   actions.className = "actions";
-  const copy = document.createElement("button");
-  copy.type = "button";
-  copy.className = "action";
-  copy.setAttribute("aria-label", "Copy");
-  copy.title = "Copy";
-  copy.innerHTML = COPY_ICON;
-  copy.addEventListener("click", async () => {
+  const copy = iconButton(COPY_ICON, "Copy", async () => {
     if (await copyText(message.text)) {
       copy.innerHTML = CHECK_ICON;
       copy.title = "Copied";
@@ -233,7 +309,12 @@ function assistantNode(message) {
       }, 1500);
     }
   });
-  actions.append(copy);
+  actions.append(copy, ...thumbs(index, "reply", message.feedback?.reply, ["Good response", "Bad response"]));
+  if (isLast && !message.full_answer) {
+    actions.append(iconButton(REGENERATE_ICON, "Regenerate", () => {
+      if (!waiting) runTurn("/api/regenerate", {});
+    }));
+  }
   wrap.append(body, actions);
   return wrap;
 }
@@ -248,7 +329,7 @@ function fileChip(name) {
   return chip;
 }
 
-function messageNode(message) {
+function messageNode(message, index, isLast) {
   if (message.role === "assistant" && message.full_answer) {
     const wrap = document.createElement("div");
     wrap.className = "full-answer";
@@ -260,12 +341,12 @@ function messageNode(message) {
     const label = document.createElement("span");
     label.className = "full-answer-label";
     label.textContent = "Full answer";
-    const answer = assistantNode(message);
+    const answer = assistantNode(message, index, isLast);
     answer.prepend(label);
     wrap.append(divider, answer);
     return wrap;
   }
-  if (message.role === "assistant") return assistantNode(message);
+  if (message.role === "assistant") return assistantNode(message, index, isLast);
   const div = document.createElement("div");
   div.className = "user";
   if (message.attachment) div.append(fileChip(message.attachment.name));
@@ -443,7 +524,8 @@ function render(state, options = {}) {
   if (empty) els.newChat.setAttribute("aria-current", "page");
   else els.newChat.removeAttribute("aria-current");
 
-  const nodes = current.messages.map(messageNode);
+  const count = current.messages.length;
+  const nodes = current.messages.map((m, i) => messageNode(m, i, i === count - 1 && !options.thinking));
   if (options.pending) nodes.push(messageNode({ role: "user", text: options.pending.text, attachment: options.pending.attachment }));
   if (options.thinking) nodes.push(noteNode("thinking", "Thinking…"));
   if (state.error) nodes.push(noteNode("error", state.error));

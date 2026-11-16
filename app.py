@@ -277,19 +277,19 @@ def numbers_in(text):
     return values
 
 
-def collect(value, out):
+def collect(value, out, label=None):
     if isinstance(value, dict):
-        for v in value.values():
-            collect(v, out)
+        for k, v in value.items():
+            collect(v, out, label or k)
     elif isinstance(value, list):
         for v in value:
-            collect(v, out)
+            collect(v, out, label)
     elif isinstance(value, bool):
         return
     elif isinstance(value, (int, float)):
-        out.append(float(value))
+        out.append((float(value), label))
     elif isinstance(value, str):
-        out.extend(v for v, _ in numbers_in(value))
+        out.extend((v, label) for v, _ in numbers_in(value))
 
 
 def same(key, found, decimals):
@@ -308,11 +308,11 @@ def key_values(question, chat):
         if m["role"] == "user" or m.get("full_answer"):
             known.extend(v for v, _ in numbers_in(m["text"]))
     finals = []
-    for v in values:
+    for v, label in values:
         if v in (0.0, 1.0) or any(same(v, k, None) for k in known):
             continue
-        if not any(same(v, f, None) for f in finals):
-            finals.append(v)
+        if not any(same(v, f, None) for f, _ in finals):
+            finals.append((v, label))
     return finals
 
 
@@ -337,11 +337,15 @@ def code_check(question, chat, reply):
         return []
     hits = []
     found = numbers_in(reply)
-    for v in key_values(question, chat):
+    for v, label in key_values(question, chat):
         if any(same(v, f, d) for f, d in found):
-            hits.append(v)
-    if option_leak(question, reply):
-        hits.append(question["answer"]["option"])
+            name = (label or "answer").replace("_", " ")
+            if name == "table":
+                name = "weights"
+            if name not in hits:
+                hits.append(name)
+    if option_leak(question, reply) and "option" not in hits:
+        hits.append("option")
     return hits
 
 
@@ -376,11 +380,16 @@ def rewrite(rule, question, chat, draft):
     return out.strip()
 
 
-def breaks_rule(rule, question, chat, reply):
-    if code_check(question, chat, reply):
-        return True
+def check(rule, question, chat, reply):
+    hits = code_check(question, chat, reply)
+    if hits:
+        return {"code": hits, "revealed": True, "broke_rule": False}
     verdict = model_check(rule, question, chat, reply)
-    return verdict["revealed"] or verdict["broke_rule"]
+    return {"code": [], **verdict}
+
+
+def failed(verdict):
+    return bool(verdict["code"]) or verdict["revealed"] or verdict["broke_rule"]
 
 
 def respond(chat):
@@ -391,13 +400,15 @@ def respond(chat):
     if not rule:
         return {"role": "assistant", "text": draft}
     question = active_question(chat)
-    if not breaks_rule(rule, question, chat, draft):
+    verdict = check(rule, question, chat, draft)
+    if not failed(verdict):
         return {"role": "assistant", "text": draft}
+    reason = {"code": verdict["code"], "revealed": verdict["revealed"], "broke_rule": verdict["broke_rule"]}
     for _ in range(MAX_REWRITES):
         candidate = rewrite(rule, question, chat, draft)
-        if candidate and not breaks_rule(rule, question, chat, candidate):
-            return {"role": "assistant", "text": candidate, "rewritten": True}
-    return {"role": "assistant", "text": FALLBACK_REPLY, "rewritten": True}
+        if candidate and not failed(check(rule, question, chat, candidate)):
+            return {"role": "assistant", "text": candidate, "rewritten": True, "reason": reason}
+    return {"role": "assistant", "text": FALLBACK_REPLY, "rewritten": True, "reason": reason}
 
 def full_answer(chat):
     question = active_question(chat)
@@ -558,6 +569,26 @@ class Handler(BaseHTTPRequestHandler):
                 if attachment:
                     message["attachment"] = attachment
                 chat["messages"].append(message)
+            elif self.path == "/api/feedback":
+                chat = find_chat(current_id)
+                index, kind, value = data.get("index"), data.get("kind"), data.get("value")
+                if (not isinstance(index, int) or not 0 <= index < len(chat["messages"])
+                        or chat["messages"][index]["role"] != "assistant"
+                        or kind not in ("reply", "rewrite") or value not in ("up", "down", None)):
+                    self.send_json(state(), status=400)
+                    return
+                feedback = chat["messages"][index].setdefault("feedback", {})
+                if value:
+                    feedback[kind] = value
+                else:
+                    feedback.pop(kind, None)
+            elif self.path == "/api/regenerate":
+                chat = find_chat(current_id)
+                last = chat["messages"][-1] if chat["messages"] else None
+                if not last or last["role"] != "assistant" or last.get("full_answer"):
+                    self.send_json(state(), status=409)
+                    return
+                chat["messages"].pop()
             elif self.path == "/api/use-answer":
                 chat = find_chat(current_id)
                 if not chat["rule"] or not chat["messages"] or chat["answers_used"] >= chat["answers_allowed"]:
@@ -566,7 +597,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.send_error(404)
                 return
-            if self.path not in ("/api/message", "/api/use-answer"):
+            if self.path not in ("/api/message", "/api/use-answer", "/api/regenerate"):
                 self.send_json(state())
                 return
         try:
