@@ -1,3 +1,4 @@
+import argparse
 import json
 import mimetypes
 import os
@@ -6,12 +7,33 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
 PORT = 8000
+LOG_PATH = ROOT / "logs" / "checks.jsonl"
+RUN_ID = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+CHECKER_ON = True
+trace = threading.local()
+log_lock = threading.Lock()
+
+
+def log_event(record):
+    record = {"time": datetime.now(timezone.utc).isoformat(timespec="seconds"), "run": RUN_ID, "checker": CHECKER_ON, **record}
+    LOG_PATH.parent.mkdir(exist_ok=True)
+    with log_lock, LOG_PATH.open("a") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def start_trace():
+    trace.calls = []
+
+
+def traced_calls():
+    return getattr(trace, "calls", [])
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 TUTOR_MODEL = "openai/gpt-oss-120b"
@@ -141,7 +163,15 @@ def call_groq(model, messages, max_tokens=1500, json_mode=False):
             raise ModelError(f"The AI service returned an error ({error.code}). Try again.")
         except (urllib.error.URLError, TimeoutError):
             raise ModelError("Could not reach the AI service. Check your internet connection.")
-    return data["choices"][0]["message"].get("content") or "", data.get("usage", {})
+    usage = data.get("usage", {})
+    if hasattr(trace, "calls"):
+        trace.calls.append({
+            "model": model,
+            "prompt_tokens": usage.get("prompt_tokens"),
+            "completion_tokens": usage.get("completion_tokens"),
+            "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens"),
+        })
+    return data["choices"][0]["message"].get("content") or "", usage
 
 
 def set_topics(key):
@@ -392,22 +422,29 @@ def failed(verdict):
     return bool(verdict["code"]) or verdict["revealed"] or verdict["broke_rule"]
 
 
-def respond(chat):
+def respond(chat, record):
     rule = chat["rule"]
     system = TUTOR_PROMPT.format(rule=rule) if rule else PLAIN_PROMPT
     draft, _ = call_groq(TUTOR_MODEL, [{"role": "system", "content": system}] + context_messages(chat) + history_messages(chat))
     draft = draft.strip()
+    record["draft"] = draft
     if not rule:
         return {"role": "assistant", "text": draft}
     question = active_question(chat)
+    record["question"] = question and question["id"]
     verdict = check(rule, question, chat, draft)
-    if not failed(verdict):
+    record["draft_check"] = verdict
+    if not failed(verdict) or not CHECKER_ON:
         return {"role": "assistant", "text": draft}
     reason = {"code": verdict["code"], "revealed": verdict["revealed"], "broke_rule": verdict["broke_rule"]}
+    record["rewrites"] = []
     for _ in range(MAX_REWRITES):
         candidate = rewrite(rule, question, chat, draft)
-        if candidate and not failed(check(rule, question, chat, candidate)):
+        result = check(rule, question, chat, candidate) if candidate else None
+        record["rewrites"].append({"text": candidate, "check": result})
+        if candidate and not failed(result):
             return {"role": "assistant", "text": candidate, "rewritten": True, "reason": reason}
+    record["fallback"] = True
     return {"role": "assistant", "text": FALLBACK_REPLY, "rewritten": True, "reason": reason}
 
 def full_answer(chat):
@@ -582,6 +619,8 @@ class Handler(BaseHTTPRequestHandler):
                     feedback[kind] = value
                 else:
                     feedback.pop(kind, None)
+                log_event({"event": "feedback", "chat": chat["id"], "index": index, "kind": kind, "value": value,
+                           "rewritten": bool(chat["messages"][index].get("rewritten"))})
             elif self.path == "/api/regenerate":
                 chat = find_chat(current_id)
                 last = chat["messages"][-1] if chat["messages"] else None
@@ -600,14 +639,33 @@ class Handler(BaseHTTPRequestHandler):
             if self.path not in ("/api/message", "/api/use-answer", "/api/regenerate"):
                 self.send_json(state())
                 return
+        start_trace()
+        last_user = next((m for m in reversed(chat["messages"]) if m["role"] == "user"), {})
+        record = {
+            "event": {"/api/use-answer": "full_answer", "/api/regenerate": "regenerate"}.get(self.path, "reply"),
+            "chat": chat["id"],
+            "rule": chat["rule"],
+            "answers_allowed": chat["answers_allowed"],
+            "user": last_user.get("text"),
+            "attachment": (last_user.get("attachment") or {}).get("name"),
+        }
         try:
             if self.path == "/api/use-answer":
+                question = active_question(chat)
+                record["question"] = question and question["id"]
                 reply = {"role": "assistant", "text": full_answer(chat), "full_answer": True}
             else:
-                reply = respond(chat)
+                reply = respond(chat, record)
             error = None
         except ModelError as exc:
             reply, error = None, str(exc)
+        record.update({
+            "final": reply and reply["text"],
+            "rewritten": bool(reply and reply.get("rewritten")),
+            "error": error,
+            "calls": traced_calls(),
+        })
+        log_event(record)
         with lock:
             if reply and reply.get("full_answer"):
                 chat["answers_used"] += 1
@@ -620,10 +678,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--checker", choices=["on", "off"], default="on")
+    CHECKER_ON = parser.parse_args().checker == "on"
     load_env()
     new_chat()
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    print(f"Open http://localhost:{PORT}")
+    print(f"Open http://localhost:{PORT}" + ("" if CHECKER_ON else "  (checker off)"))
     try:
         server.serve_forever()
     except KeyboardInterrupt:
