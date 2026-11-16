@@ -28,10 +28,31 @@
 
     <div class="composer-wrap">
       <div class="menu" id="menu" role="menu" aria-label="Add" hidden>
-        <button type="button" class="menu-item" role="menuitem" id="menu-rule">
-          <span>Study rule</span><span class="menu-detail" id="menu-rule-detail">Off</span>
-        </button>
+        <div class="menu-panel" id="menu-main">
+          <button type="button" class="menu-item" role="menuitem" id="menu-files">
+            <span>Add files</span>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>
+          </button>
+          <div class="menu-separator" role="separator" id="menu-separator"></div>
+          <button type="button" class="menu-item" role="menuitem" id="menu-rule">
+            <span>Study rule</span><span class="menu-detail" id="menu-rule-detail">Off</span>
+          </button>
+          <div class="menu-tip-wrap" id="menu-answer-wrap">
+            <button type="button" class="menu-item" role="menuitem" id="menu-answer" aria-describedby="menu-tip">
+              <span>Use an answer</span><span class="menu-detail" id="menu-answer-count"></span>
+            </button>
+            <span class="menu-tip" role="tooltip" id="menu-tip">No answers left. Start a new chat to change your limit.</span>
+          </div>
+        </div>
+        <div class="menu-panel" id="menu-files-panel" hidden>
+          <span class="menu-label">Recent files</span>
+          <div id="recent-files" class="menu-panel"></div>
+          <div class="menu-separator" role="separator"></div>
+          <button type="button" class="menu-item" role="menuitem" id="menu-upload"><span>Upload from computer</span></button>
+        </div>
       </div>
+      <input type="file" id="file-input" accept=".md,.txt,.markdown,text/plain,text/markdown" hidden>
+      <div class="attachment-tray" id="attachment-tray" hidden></div>
       <form class="composer" id="composer" autocomplete="off">
         <button type="button" class="icon-button" id="plus" aria-label="Add" aria-haspopup="menu" aria-expanded="false">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>

@@ -19,7 +19,24 @@ const els = {
   answers: document.getElementById("answers"),
   ruleCancel: document.getElementById("rule-cancel"),
   ruleStart: document.getElementById("rule-start"),
+  menuMain: document.getElementById("menu-main"),
+  menuFiles: document.getElementById("menu-files"),
+  menuFilesPanel: document.getElementById("menu-files-panel"),
+  menuSeparator: document.getElementById("menu-separator"),
+  menuAnswerWrap: document.getElementById("menu-answer-wrap"),
+  menuAnswer: document.getElementById("menu-answer"),
+  menuAnswerCount: document.getElementById("menu-answer-count"),
+  menuTip: document.getElementById("menu-tip"),
+  recentFiles: document.getElementById("recent-files"),
+  menuUpload: document.getElementById("menu-upload"),
+  fileInput: document.getElementById("file-input"),
+  tray: document.getElementById("attachment-tray"),
 };
+
+const FILE_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"></path><path d="M14 3v5h5"></path></svg>';
+const UPLOAD_LIMIT = 30000;
+
+let attachment = null;
 
 const MAX_ANSWERS = 5;
 
@@ -221,11 +238,42 @@ function assistantNode(message) {
   return wrap;
 }
 
+function fileChip(name) {
+  const chip = document.createElement("span");
+  chip.className = "file-chip";
+  chip.innerHTML = FILE_ICON;
+  const label = document.createElement("span");
+  label.textContent = name;
+  chip.append(label);
+  return chip;
+}
+
 function messageNode(message) {
+  if (message.role === "assistant" && message.full_answer) {
+    const wrap = document.createElement("div");
+    wrap.className = "full-answer";
+    const divider = document.createElement("div");
+    divider.className = "divider";
+    const text = document.createElement("span");
+    text.textContent = `You used an answer. ${message.answers_left}/${current.answers_allowed} left.`;
+    divider.append(document.createElement("span"), text, document.createElement("span"));
+    const label = document.createElement("span");
+    label.className = "full-answer-label";
+    label.textContent = "Full answer";
+    const answer = assistantNode(message);
+    answer.prepend(label);
+    wrap.append(divider, answer);
+    return wrap;
+  }
   if (message.role === "assistant") return assistantNode(message);
   const div = document.createElement("div");
   div.className = "user";
-  div.textContent = message.text;
+  if (message.attachment) div.append(fileChip(message.attachment.name));
+  if (message.text) {
+    const text = document.createElement("div");
+    text.textContent = message.text;
+    div.append(text);
+  }
   return div;
 }
 
@@ -250,11 +298,74 @@ function renderControls(chat, locked) {
   }
   els.menuRule.hidden = locked;
   els.menuRuleDetail.textContent = chat.label || "Off";
-  els.plus.disabled = locked;
-  if (locked) closeMenu();
+  const showAnswer = locked && Boolean(chat.rule);
+  els.menuAnswerWrap.hidden = !showAnswer;
+  els.menuSeparator.hidden = locked && !chat.rule;
+  if (showAnswer) {
+    const none = chat.answers_left <= 0;
+    els.menuAnswer.disabled = none;
+    els.menuAnswerWrap.classList.toggle("disabled", none);
+    els.menuAnswerCount.textContent = `${chat.answers_left}/${chat.answers_allowed}`;
+  }
+  els.plus.disabled = waiting;
+  if (waiting) closeMenu();
+}
+
+function renderRecentFiles(files) {
+  els.recentFiles.replaceChildren(...files.map((file) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "menu-item";
+    button.setAttribute("role", "menuitem");
+    const label = document.createElement("span");
+    label.className = "menu-file";
+    label.innerHTML = FILE_ICON;
+    const name = document.createElement("span");
+    name.textContent = file.name;
+    label.append(name);
+    button.append(label);
+    button.addEventListener("click", () => attach({ kind: "recent", id: file.id, name: file.name }));
+    return button;
+  }));
+}
+
+function renderTray() {
+  els.tray.hidden = !attachment;
+  if (!attachment) {
+    els.tray.replaceChildren();
+    return;
+  }
+  const chip = fileChip(attachment.name);
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "chip-remove";
+  remove.setAttribute("aria-label", `Remove ${attachment.name}`);
+  remove.textContent = "\u00d7";
+  remove.addEventListener("click", () => {
+    attachment = null;
+    renderTray();
+    updateSend();
+  });
+  chip.append(remove);
+  els.tray.replaceChildren(chip);
+}
+
+function attach(file) {
+  attachment = file;
+  closeMenu();
+  renderTray();
+  updateSend();
+  els.input.focus();
+}
+
+function showFilesPanel(show) {
+  els.menuMain.hidden = show;
+  els.menuFilesPanel.hidden = !show;
+  els.menu.querySelector(".menu-panel:not([hidden]) .menu-item:not([hidden])")?.focus();
 }
 
 function openMenu() {
+  showFilesPanel(false);
   els.menu.hidden = false;
   els.plus.setAttribute("aria-expanded", "true");
   els.menu.querySelector(".menu-item:not([hidden])")?.focus();
@@ -312,6 +423,7 @@ function closeDialog() {
 
 function render(state, options = {}) {
   current = state.current;
+  renderRecentFiles(state.recent_files || []);
 
   els.recentLabel.hidden = state.chats.length === 0;
   els.recent.replaceChildren(...state.chats.map((chat) => {
@@ -332,7 +444,8 @@ function render(state, options = {}) {
   else els.newChat.removeAttribute("aria-current");
 
   const nodes = current.messages.map(messageNode);
-  if (options.pending) nodes.push(messageNode({ role: "user", text: options.pending }), noteNode("thinking", "Thinking…"));
+  if (options.pending) nodes.push(messageNode({ role: "user", text: options.pending.text, attachment: options.pending.attachment }));
+  if (options.thinking) nodes.push(noteNode("thinking", "Thinking…"));
   if (state.error) nodes.push(noteNode("error", state.error));
   els.messages.replaceChildren(...nodes);
   renderControls(current, current.locked || Boolean(options.pending));
@@ -343,13 +456,61 @@ function render(state, options = {}) {
 }
 
 function updateSend() {
-  els.send.disabled = waiting || els.input.value.trim() === "";
+  els.send.disabled = waiting || (els.input.value.trim() === "" && !attachment);
+}
+
+async function runTurn(path, body, pending) {
+  waiting = true;
+  const before = await api("/api/state");
+  render(before, { pending, thinking: true });
+  let state;
+  try {
+    state = await api(path, body);
+  } catch {
+    state = { ...before, error: "The server did not respond. Is it still running?" };
+  }
+  const nodes = render(state);
+  const last = state.current.messages.at(-1);
+  if (last && last.role === "assistant" && !state.error) {
+    const node = nodes[state.current.messages.length - 1];
+    const actions = node.querySelector(".actions");
+    actions.hidden = true;
+    await reveal(node.querySelector(".reply"));
+    actions.hidden = false;
+  }
+  waiting = false;
+  renderControls(current, current.locked);
+  updateSend();
+  els.input.focus();
 }
 
 els.input.addEventListener("input", updateSend);
 
 els.plus.addEventListener("click", () => (els.menu.hidden ? openMenu() : closeMenu()));
 els.menuRule.addEventListener("click", openDialog);
+els.menuFiles.addEventListener("click", () => showFilesPanel(true));
+els.menuUpload.addEventListener("click", () => {
+  closeMenu();
+  els.fileInput.click();
+});
+
+els.fileInput.addEventListener("change", async () => {
+  const file = els.fileInput.files[0];
+  els.fileInput.value = "";
+  if (!file) return;
+  const text = await file.text();
+  if (/\u0000/.test(text.slice(0, 2000))) {
+    render({ ...(await api("/api/state")), error: `${file.name} isn't a text file. This prototype reads text and Markdown files only.` });
+    return;
+  }
+  attach({ kind: "upload", name: file.name, content: text.slice(0, UPLOAD_LIMIT) });
+});
+
+els.menuAnswer.addEventListener("click", () => {
+  if (els.menuAnswer.disabled || waiting) return;
+  closeMenu();
+  runTurn("/api/use-answer", {});
+});
 els.rule.addEventListener("input", updateStart);
 els.ruleCancel.addEventListener("click", closeDialog);
 els.scrim.addEventListener("click", closeDialog);
@@ -373,32 +534,15 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-els.composer.addEventListener("submit", async (event) => {
+els.composer.addEventListener("submit", (event) => {
   event.preventDefault();
   const text = els.input.value.trim();
-  if (!text || waiting) return;
+  if ((!text && !attachment) || waiting) return;
+  const sent = attachment;
   els.input.value = "";
-  waiting = true;
-  const before = await api("/api/state");
-  render(before, { pending: text });
-  let state;
-  try {
-    state = await api("/api/message", { text });
-  } catch {
-    state = { ...before, error: "The server did not respond. Is it still running?" };
-  }
-  const nodes = render(state);
-  const last = state.current.messages.at(-1);
-  if (last && last.role === "assistant" && !state.error) {
-    const node = nodes[state.current.messages.length - 1];
-    const actions = node.querySelector(".actions");
-    actions.hidden = true;
-    await reveal(node.querySelector(".reply"));
-    actions.hidden = false;
-  }
-  waiting = false;
-  updateSend();
-  els.input.focus();
+  attachment = null;
+  renderTray();
+  runTurn("/api/message", { text, attachment: sent }, { text, attachment: sent && { name: sent.name } });
 });
 
 els.newChat.addEventListener("click", async () => {

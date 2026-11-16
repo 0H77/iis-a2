@@ -3,6 +3,7 @@ import mimetypes
 import os
 import re
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -65,7 +66,25 @@ REWRITE_PROMPT = (
 
 FALLBACK_REPLY = "I can't answer that without breaking your study rule."
 
-QUESTIONS = [q for qs in json.loads((ROOT / "questions" / "question_sets.json").read_text())["sets"].values() for q in qs]
+SETS = json.loads((ROOT / "questions" / "question_sets.json").read_text())["sets"]
+SET_NAMES = {key: f"CVI mock set {key.removeprefix('set')}" for key in SETS}
+RECENT_FILES = ["set1", "set2"]
+QUESTIONS = [q for qs in SETS.values() for q in qs]
+UPLOAD_LIMIT = 30000
+
+ATTACHMENT_PROMPT = "The student attached \"{name}\". It contains {count} questions: {topics}."
+
+ACTIVE_PROMPT = (
+    "The student is working on this question{where}: {question}{options}\n"
+    "Answer key (for you only; the student's rule still applies): {key}{working}"
+)
+
+UPLOAD_PROMPT = "The student attached \"{name}\". Its contents:\n{content}"
+
+FULL_ANSWER_PROMPT = (
+    BASE_PROMPT + "The student chose to see the full answer. Write the complete worked solution, step by step, "
+    "ending with the final answer. {source} " + STYLE
+)
 
 
 def load_env():
@@ -80,6 +99,9 @@ def load_env():
 
 class ModelError(Exception):
     pass
+
+
+RATE_LIMIT_WAIT = 20
 
 
 def call_groq(model, messages, max_tokens=1500, json_mode=False):
@@ -99,15 +121,82 @@ def call_groq(model, messages, max_tokens=1500, json_mode=False):
         data=json.dumps(payload).encode(),
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json", "User-Agent": "study-assistant/1.0"},
     )
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            data = json.load(response)
-    except urllib.error.HTTPError as error:
-        detail = error.read().decode(errors="replace")[:300]
-        raise ModelError(f"Groq returned an error ({error.code}): {detail}")
-    except (urllib.error.URLError, TimeoutError) as error:
-        raise ModelError(f"Could not reach Groq: {error}")
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                data = json.load(response)
+            break
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode(errors="replace")
+            print(f"Groq error {error.code}: {detail[:500]}", flush=True)
+            wait = re.search(r"try again in (?:(\d+)m)?([\d.]+)s", detail)
+            seconds = (int(wait.group(1) or 0) * 60 + float(wait.group(2))) if wait else None
+            if error.code == 429 and seconds is not None and seconds <= RATE_LIMIT_WAIT and attempt < 2:
+                time.sleep(seconds + 0.5)
+                continue
+            if error.code == 429:
+                raise ModelError("The free AI usage limit was reached. Wait a minute and try again.")
+            if error.code == 401:
+                raise ModelError("The Groq API key was rejected. Check GROQ_API_KEY in the .env file.")
+            raise ModelError(f"The AI service returned an error ({error.code}). Try again.")
+        except (urllib.error.URLError, TimeoutError):
+            raise ModelError("Could not reach the AI service. Check your internet connection.")
     return data["choices"][0]["message"].get("content") or "", data.get("usage", {})
+
+
+def set_topics(key):
+    return "; ".join(f"{n} {q['topic']}" for n, q in enumerate(SETS[key], 1))
+
+
+def question_place(question):
+    for key, questions in SETS.items():
+        if question in questions:
+            return key, questions.index(question) + 1
+    return None, None
+
+
+def recognise_upload(content):
+    target = words(content)
+    for key, questions in SETS.items():
+        found = sum(1 for q in questions if len(words(q["question"]) & target) >= 0.8 * len(words(q["question"])))
+        if found >= len(questions) // 2:
+            return key
+    return None
+
+
+def attachments(chat):
+    return [m["attachment"] for m in chat["messages"] if m.get("attachment")]
+
+
+def context_messages(chat):
+    out = []
+    names = {}
+    for a in attachments(chat):
+        if a.get("set"):
+            names[a["set"]] = a["name"]
+            out.append({"role": "system", "content": ATTACHMENT_PROMPT.format(
+                name=a["name"], count=len(SETS[a["set"]]), topics=set_topics(a["set"]))})
+        elif a.get("content"):
+            out.append({"role": "system", "content": UPLOAD_PROMPT.format(name=a["name"], content=a["content"])})
+    question = active_question(chat)
+    if question:
+        key, number = question_place(question)
+        where = f" (question {number} of {names[key]})" if key in names else ""
+        options = (" Options: " + "; ".join(f"{k}) {v}" for k, v in question["options"].items())) if "options" in question else ""
+        working = f"\nWorking: {question['working']}" if question.get("working") else ""
+        out.append({"role": "system", "content": ACTIVE_PROMPT.format(
+            where=where, question=question["question"], options=options, key=json.dumps(question["answer"]), working=working)})
+    return out
+
+
+def history_messages(chat, limit=HISTORY_LIMIT):
+    out = []
+    for m in chat["messages"][-limit:]:
+        text = m["text"]
+        if m.get("attachment"):
+            text = f"[Attached: {m['attachment']['name']}]\n{text}".strip()
+        out.append({"role": m["role"], "content": text})
+    return out
 
 
 def words(text):
@@ -125,13 +214,36 @@ def match_question(text):
     return best if best_score >= 0.6 else None
 
 
+def numbered_question(chat, text):
+    sets = [a["set"] for a in attachments(chat) if a.get("set")]
+    if not sets:
+        return None
+    found = re.findall(r"\b(?:question|q|no\.?|number|#)\s*(\d{1,2})\b", text, re.IGNORECASE)
+    if not found:
+        return None
+    n = int(found[-1])
+    questions = SETS[sets[-1]]
+    return questions[n - 1] if 1 <= n <= len(questions) else None
+
+
+def next_question(question):
+    key, number = question_place(question)
+    if key and number < len(SETS[key]):
+        return SETS[key][number]
+    return question
+
+
 def active_question(chat):
-    for m in reversed(chat["messages"]):
-        if m["role"] == "user":
-            q = match_question(m["text"])
-            if q:
-                return q
-    return None
+    current = None
+    for m in chat["messages"]:
+        if m["role"] != "user":
+            continue
+        q = numbered_question(chat, m["text"]) or match_question(m["text"])
+        if q:
+            current = q
+        elif current and re.search(r"\bnext\b", m["text"], re.IGNORECASE):
+            current = next_question(current)
+    return current
 
 
 NUMBER = r"-?\d+(?:,\d{3})*(?:\.\d+)?(?:/\d+(?:\.\d+)?)?"
@@ -193,7 +305,7 @@ def key_values(question, chat):
     collect(question["answer"], values)
     known = [v for v, _ in numbers_in(question["question"])]
     for m in chat["messages"]:
-        if m["role"] == "user":
+        if m["role"] == "user" or m.get("full_answer"):
             known.extend(v for v, _ in numbers_in(m["text"]))
     finals = []
     for v in values:
@@ -255,7 +367,7 @@ def model_check(rule, question, chat, reply):
 
 def rewrite(rule, question, chat, draft):
     text, key = describe(question)
-    history = [{"role": m["role"], "content": m["text"]} for m in chat["messages"][-6:]]
+    history = history_messages(chat, 6)
     out, _ = call_groq(TUTOR_MODEL, [
         {"role": "system", "content": REWRITE_PROMPT.format(rule=rule, question=text, key=key)},
         *history,
@@ -273,9 +385,8 @@ def breaks_rule(rule, question, chat, reply):
 
 def respond(chat):
     rule = chat["rule"]
-    history = [{"role": m["role"], "content": m["text"]} for m in chat["messages"][-HISTORY_LIMIT:]]
     system = TUTOR_PROMPT.format(rule=rule) if rule else PLAIN_PROMPT
-    draft, _ = call_groq(TUTOR_MODEL, [{"role": "system", "content": system}] + history)
+    draft, _ = call_groq(TUTOR_MODEL, [{"role": "system", "content": system}] + context_messages(chat) + history_messages(chat))
     draft = draft.strip()
     if not rule:
         return {"role": "assistant", "text": draft}
@@ -287,6 +398,20 @@ def respond(chat):
         if candidate and not breaks_rule(rule, question, chat, candidate):
             return {"role": "assistant", "text": candidate, "rewritten": True}
     return {"role": "assistant", "text": FALLBACK_REPLY, "rewritten": True}
+
+def full_answer(chat):
+    question = active_question(chat)
+    if question:
+        source = f"The question: {question['question']} Answer key: {json.dumps(question['answer'])}"
+        if question.get("working"):
+            source += f" Working: {question['working']}"
+        source += " Your final answer must match the answer key."
+    else:
+        source = "Answer the problem the student is currently working on."
+    text, _ = call_groq(TUTOR_MODEL, [{"role": "system", "content": FULL_ANSWER_PROMPT.format(source=source)}]
+                        + context_messages(chat) + history_messages(chat))
+    return text.strip()
+
 
 lock = threading.Lock()
 chats = []
@@ -306,7 +431,16 @@ def find_chat(chat_id):
 
 
 def chat_title(chat):
-    return " ".join(chat["messages"][0]["text"].split())[:80]
+    first = chat["messages"][0]
+    text = " ".join(first["text"].split()) or (first.get("attachment") or {}).get("name", "New chat")
+    return text[:80]
+
+
+def public_message(message):
+    out = {k: v for k, v in message.items() if k != "attachment"}
+    if message.get("attachment"):
+        out["attachment"] = {"name": message["attachment"]["name"]}
+    return out
 
 
 def rule_label(rule):
@@ -321,9 +455,10 @@ def state():
     rule = chat["rule"]
     return {
         "chats": [{"id": c["id"], "title": chat_title(c)} for c in reversed(chats) if c["messages"]],
+        "recent_files": [{"id": key, "name": SET_NAMES[key]} for key in RECENT_FILES],
         "current": {
             "id": chat["id"],
-            "messages": chat["messages"],
+            "messages": [public_message(m) for m in chat["messages"]],
             "locked": bool(chat["messages"]),
             "rule": rule,
             "label": rule_label(rule) if rule else None,
@@ -359,6 +494,18 @@ class Handler(BaseHTTPRequestHandler):
     def read_json(self):
         length = int(self.headers.get("Content-Length") or 0)
         return json.loads(self.rfile.read(length) or b"{}")
+
+    def read_attachment(self, data):
+        if not isinstance(data, dict):
+            return None
+        if data.get("kind") == "recent" and data.get("id") in SETS:
+            return {"name": SET_NAMES[data["id"]], "set": data["id"]}
+        if data.get("kind") == "upload":
+            name = str(data.get("name") or "file")[:120]
+            content = str(data.get("content") or "")[:UPLOAD_LIMIT]
+            key = recognise_upload(content)
+            return {"name": name, "set": key} if key else {"name": name, "content": content}
+        return None
 
     def do_GET(self):
         if self.path == "/":
@@ -402,23 +549,38 @@ class Handler(BaseHTTPRequestHandler):
                 chat["answers_allowed"] = allowed
             elif self.path == "/api/message":
                 text = str(data.get("text", "")).strip()
-                if not text:
+                attachment = self.read_attachment(data.get("attachment"))
+                if not text and not attachment:
                     self.send_json(state())
                     return
                 chat = find_chat(current_id)
-                chat["messages"].append({"role": "user", "text": text})
+                message = {"role": "user", "text": text}
+                if attachment:
+                    message["attachment"] = attachment
+                chat["messages"].append(message)
+            elif self.path == "/api/use-answer":
+                chat = find_chat(current_id)
+                if not chat["rule"] or not chat["messages"] or chat["answers_used"] >= chat["answers_allowed"]:
+                    self.send_json(state(), status=409)
+                    return
             else:
                 self.send_error(404)
                 return
-            if self.path != "/api/message":
+            if self.path not in ("/api/message", "/api/use-answer"):
                 self.send_json(state())
                 return
         try:
-            reply = respond(chat)
+            if self.path == "/api/use-answer":
+                reply = {"role": "assistant", "text": full_answer(chat), "full_answer": True}
+            else:
+                reply = respond(chat)
             error = None
         except ModelError as exc:
             reply, error = None, str(exc)
         with lock:
+            if reply and reply.get("full_answer"):
+                chat["answers_used"] += 1
+                reply["answers_left"] = chat["answers_allowed"] - chat["answers_used"]
             if reply:
                 chat["messages"].append(reply)
             result = state()
