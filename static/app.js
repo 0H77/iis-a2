@@ -182,6 +182,7 @@ function formatReply(text) {
 function revealUnits(root) {
   const units = [];
   const nodes = [];
+  for (const item of root.querySelectorAll("li")) item.classList.add("hidden-marker");
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, {
     acceptNode(node) {
       if (node.nodeType === Node.ELEMENT_NODE) {
@@ -219,7 +220,31 @@ function revealUnits(root) {
   return units;
 }
 
+let following = true;
+let expectedScroll = null;
+
+els.thread.addEventListener("scroll", () => {
+  if (expectedScroll !== null && Math.abs(els.thread.scrollTop - expectedScroll) < 2) return;
+  expectedScroll = null;
+  following = false;
+});
+
+function follow(element) {
+  const box = element.getBoundingClientRect();
+  const view = els.thread.getBoundingClientRect();
+  const below = box.bottom - (view.bottom - 24);
+  if (!following) {
+    following = below <= 0 && box.top >= view.top;
+    return;
+  }
+  if (below > 0) {
+    els.thread.scrollTop += below;
+    expectedScroll = els.thread.scrollTop;
+  }
+}
+
 function reveal(root) {
+  following = true;
   const units = revealUnits(root);
   const step = Math.max(8, Math.min(35, 2500 / Math.max(units.length, 1)));
   return new Promise((resolve) => {
@@ -231,8 +256,9 @@ function reveal(root) {
         return;
       }
       units[i].classList.remove("hidden-unit");
+      units[i].closest("li")?.classList.remove("hidden-marker");
+      follow(units[i]);
       i += 1;
-      if (i % 5 === 0) els.thread.scrollTop = els.thread.scrollHeight;
     }, step);
   });
 }
@@ -263,6 +289,15 @@ function iconButton(icon, label, onClick) {
   button.innerHTML = icon;
   button.addEventListener("click", onClick);
   return button;
+}
+
+function swapIcon(button, icon, label) {
+  button.classList.add("swapping");
+  setTimeout(() => {
+    button.innerHTML = icon;
+    button.title = label;
+    button.classList.remove("swapping");
+  }, 100);
 }
 
 function thumbs(index, kind, value, labels) {
@@ -300,6 +335,13 @@ function rewriteNote(message, index) {
     else expanded.add(key);
     toggle.setAttribute("aria-expanded", String(expanded.has(key)));
     details.hidden = !expanded.has(key);
+    if (!details.hidden) {
+      const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      details.animate(
+        [{ opacity: 0, transform: still ? "none" : "translateY(-4px)" }, { opacity: 1, transform: "none" }],
+        { duration: 200, easing: "cubic-bezier(0.23, 1, 0.32, 1)" },
+      );
+    }
   });
 
   const reason = message.reason || { code: [], revealed: true, broke_rule: false };
@@ -340,12 +382,8 @@ function assistantNode(message, index, isLast) {
   actions.className = "actions";
   const copy = iconButton(COPY_ICON, "Copy", async () => {
     if (await copyText(message.text)) {
-      copy.innerHTML = CHECK_ICON;
-      copy.title = "Copied";
-      setTimeout(() => {
-        copy.innerHTML = COPY_ICON;
-        copy.title = "Copy";
-      }, 1500);
+      swapIcon(copy, CHECK_ICON, "Copied");
+      setTimeout(() => swapIcon(copy, COPY_ICON, "Copy"), 1500);
     }
   });
   actions.append(copy, ...thumbs(index, "reply", message.feedback?.reply, ["Good response", "Bad response"]));
@@ -571,7 +609,7 @@ function render(state, options = {}) {
   els.messages.replaceChildren(...nodes);
   renderControls(current, current.locked || Boolean(options.pending));
 
-  els.thread.scrollTop = els.thread.scrollHeight;
+  if (!options.keepScroll) els.thread.scrollTop = els.thread.scrollHeight;
   updateSend();
   return nodes;
 }
@@ -590,14 +628,17 @@ async function runTurn(path, body, pending) {
   } catch {
     state = { ...before, error: "The server did not respond. Is it still running?" };
   }
-  const nodes = render(state);
   const last = state.current.messages.at(-1);
-  if (last && last.role === "assistant" && !state.error) {
+  const replied = last && last.role === "assistant" && !state.error;
+  const nodes = render(state, { keepScroll: replied });
+  if (replied) {
     const node = nodes[state.current.messages.length - 1];
     const actions = node.querySelector(".actions");
     actions.hidden = true;
     await reveal(node.querySelector(".reply"));
     actions.hidden = false;
+    follow(actions);
+    actions.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 200, easing: "cubic-bezier(0.23, 1, 0.32, 1)" });
   }
   waiting = false;
   renderControls(current, current.locked);

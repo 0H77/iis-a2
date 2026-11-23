@@ -8,6 +8,8 @@
   --text: #ECECEE;
   --text-rail: #D4D5D9;
   --muted: #A3A6AD;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
 }
 
 * {
@@ -241,10 +243,23 @@ button {
   opacity: 0;
 }
 
+.reply span,
+.reply .katex-display {
+  transition: opacity 180ms var(--ease-out);
+}
+
 .actions {
   display: flex;
   gap: 2px;
   margin-left: -6px;
+}
+
+.actions[hidden] {
+  display: none;
+}
+
+.reply li.hidden-marker::marker {
+  color: transparent;
 }
 
 .action {
@@ -267,6 +282,17 @@ button {
 .thinking {
   font-size: 16px;
   color: var(--muted);
+  animation: thinking-pulse 1.6s var(--ease-in-out) infinite alternate;
+}
+
+@keyframes thinking-pulse {
+  from {
+    opacity: 0.45;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 .error {
@@ -382,10 +408,22 @@ button {
   flex-direction: column;
   gap: 2px;
   z-index: 5;
+  transform-origin: bottom left;
+  transition: opacity 150ms var(--ease-out), transform 150ms var(--ease-out), display 150ms allow-discrete;
 }
 
 .menu[hidden] {
   display: none;
+  opacity: 0;
+  transform: scale(0.97) translateY(4px);
+  transition-duration: 100ms;
+}
+
+@starting-style {
+  .menu {
+    opacity: 0;
+    transform: scale(0.97) translateY(4px);
+  }
 }
 
 .menu-item {
@@ -444,8 +482,19 @@ button {
   padding: 16px;
 }
 
+.dialog-layer {
+  transition: opacity 200ms var(--ease-out), display 200ms allow-discrete;
+}
+
 .dialog-layer[hidden] {
   display: none;
+  opacity: 0;
+}
+
+@starting-style {
+  .dialog-layer {
+    opacity: 0;
+  }
 }
 
 .scrim {
@@ -465,6 +514,19 @@ button {
   display: flex;
   flex-direction: column;
   gap: 18px;
+  transition: opacity 220ms var(--ease-out), transform 220ms var(--ease-out);
+}
+
+.dialog-layer[hidden] .dialog {
+  opacity: 0;
+  transform: scale(0.96);
+}
+
+@starting-style {
+  .dialog {
+    opacity: 0;
+    transform: scale(0.96);
+  }
 }
 
 .dialog-head {
@@ -824,6 +886,10 @@ button {
   font-size: 14px;
 }
 
+.rewrite-toggle svg {
+  transition: transform 200ms var(--ease-out);
+}
+
 .rewrite-toggle[aria-expanded="true"] svg {
   transform: rotate(90deg);
 }
@@ -856,4 +922,99 @@ button {
   background: #555A63;
   border-radius: 3px;
   vertical-align: middle;
+}
+
+.send,
+#plus {
+  transition: transform 140ms var(--ease-out);
+}
+
+.send:active:not(:disabled),
+#plus:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.action,
+.new-chat,
+.recent button,
+.rail-toggle,
+.chip-remove,
+.answer-option,
+.button-primary,
+.button-secondary,
+.menu-item {
+  transition: transform 160ms var(--ease-out);
+}
+
+.action:active,
+.new-chat:active,
+.recent button:active,
+.rail-toggle:active,
+.chip-remove:active,
+.answer-option:active,
+.button-primary:active:not(:disabled),
+.button-secondary:active,
+.menu-item:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.action svg {
+  transition: filter 200ms ease, opacity 200ms ease;
+}
+
+.action.swapping svg {
+  filter: blur(2px);
+  opacity: 0.7;
+}
+
+.file-chip {
+  transition: opacity 200ms var(--ease-out), transform 200ms var(--ease-out);
+}
+
+@starting-style {
+  .file-chip {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .action:active,
+  .new-chat:active,
+  .recent button:active,
+  .rail-toggle:active,
+  .chip-remove:active,
+  .answer-option:active,
+  .button-primary:active:not(:disabled),
+  .button-secondary:active,
+  .menu-item:active:not(:disabled),
+  .file-chip {
+    transform: none;
+  }
+
+  @starting-style {
+    .file-chip {
+      transform: none;
+    }
+  }
+
+  .thinking {
+    animation: none;
+  }
+
+  .menu,
+  .menu[hidden],
+  .dialog,
+  .dialog-layer[hidden] .dialog,
+  .send:active:not(:disabled),
+  #plus:active:not(:disabled) {
+    transform: none;
+  }
+
+  @starting-style {
+    .menu,
+    .dialog {
+      transform: none;
+    }
+  }
 }
