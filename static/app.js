@@ -115,10 +115,11 @@ function formatText(text) {
 function formatReply(text) {
   const math = [];
   const pattern = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\$([^$\n]+?)\$|\\\(([\s\S]+?)\\\)/g;
-  const masked = text.replace(/\r/g, "").replace(pattern, (whole, a, b, c, d) => {
+  const masked = text.replace(/\r/g, "").replace(pattern, (whole, a, b, c, d, offset, all) => {
     const display = a !== undefined || b !== undefined;
     math.push(renderMath((a ?? b ?? c ?? d).trim(), display));
-    return display ? `\n\n\u0000${math.length - 1}\u0000\n\n` : `\u0000${math.length - 1}\u0000`;
+    const indent = all.slice(all.lastIndexOf("\n", offset - 1) + 1, offset);
+    return display && !/^\s{2,}$/.test(indent) ? `\n\n\u0000${math.length - 1}\u0000\n\n` : `\u0000${math.length - 1}\u0000`;
   });
   const restore = (html) => html.replace(/\u0000(\d+)\u0000/g, (_, i) => math[Number(i)]);
   const inline = (line) => restore(formatText(line.trim()));
@@ -141,21 +142,32 @@ function formatReply(text) {
       para = [];
     };
     const flushList = () => {
-      if (list) out.push(`<${list.tag}>${list.items.map((i) => `<li>${inline(i)}</li>`).join("")}</${list.tag}>`);
+      if (list) {
+        const items = list.items.map((i) => `<li>${inline(i.text)}${i.sub.length ? `<ul>${i.sub.map((s) => `<li>${inline(s)}</li>`).join("")}</ul>` : ""}</li>`).join("");
+        out.push(list.tag === "ol" && list.start !== 1 ? `<ol start="${list.start}">${items}</ol>` : `<${list.tag}>${items}</${list.tag}>`);
+      }
       list = null;
     };
     for (const line of lines) {
-      const bullet = line.match(/^\s*[-*•]\s+(.*)$/);
-      const number = line.match(/^\s*\d+[.)]\s+(.*)$/);
-      const item = bullet || number;
-      if (item) {
+      const heading = line.match(/^\s*#{1,6}\s+(.*)$/);
+      const bullet = line.match(/^(\s*)[-*•]\s+(.*)$/);
+      const number = line.match(/^\s*(\d+)[.)]\s+(.*)$/);
+      if (heading) {
+        flushPara();
+        flushList();
+        out.push(`<h3>${inline(heading[1])}</h3>`);
+      } else if (bullet && list && list.tag === "ol" && bullet[1].length >= 2) {
+        list.items[list.items.length - 1].sub.push(bullet[2]);
+      } else if (bullet || number) {
         const tag = bullet ? "ul" : "ol";
         flushPara();
         if (list && list.tag !== tag) flushList();
-        if (!list) list = { tag, items: [] };
-        list.items.push(item[1]);
+        if (!list) list = { tag, items: [], start: number ? Number(number[1]) : 1 };
+        list.items.push({ text: bullet ? bullet[2] : number[2], sub: [] });
       } else if (list && /^\s{2,}\S/.test(line)) {
-        list.items[list.items.length - 1] += ` ${line.trim()}`;
+        const last = list.items[list.items.length - 1];
+        if (last.sub.length) last.sub[last.sub.length - 1] += ` ${line.trim()}`;
+        else last.text += ` ${line.trim()}`;
       } else {
         flushList();
         para.push(line);
