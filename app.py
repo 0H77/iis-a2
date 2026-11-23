@@ -119,6 +119,11 @@ ACTIVE_PROMPT = (
 
 UPLOAD_PROMPT = "The student attached \"{name}\". Its contents:\n{content}"
 
+TITLE_PROMPT = (
+    "Write a short title, at most six words, that describes what the message below is about. "
+    "Name the question number or topic if the message gives one. Reply with the title only, without quotes or a full stop."
+)
+
 FULL_ANSWER_PROMPT = (
     BASE_PROMPT + "The student chose to see the full answer. Write the complete worked solution, step by step, "
     "ending with the final answer. {source} " + STYLE
@@ -524,7 +529,22 @@ def find_chat(chat_id):
     return next((c for c in chats if c["id"] == chat_id), None)
 
 
+def make_title(chat):
+    first = chat["messages"][0]
+    name = (first.get("attachment") or {}).get("name")
+    content = first["text"] + (f"\nAttached file: {name}" if name else "")
+    try:
+        out, _ = call_groq(CHECK_MODEL, [{"role": "system", "content": TITLE_PROMPT}, {"role": "user", "content": content}], max_tokens=300)
+    except ModelError:
+        return
+    title = " ".join(out.split()).strip("\"'. ")
+    if title:
+        chat["title"] = title[:80]
+
+
 def chat_title(chat):
+    if chat.get("title"):
+        return chat["title"]
     first = chat["messages"][0]
     text = " ".join(first["text"].split()) or (first.get("attachment") or {}).get("name", "New chat")
     return text[:80]
@@ -685,6 +705,11 @@ class Handler(BaseHTTPRequestHandler):
             if self.path not in ("/api/message", "/api/use-answer", "/api/regenerate"):
                 self.send_json(state())
                 return
+        titler = None
+        if "title" not in chat and chat["messages"]:
+            chat["title"] = None
+            titler = threading.Thread(target=make_title, args=(chat,), daemon=True)
+            titler.start()
         start_trace()
         last_user = next((m for m in reversed(chat["messages"]) if m["role"] == "user"), {})
         record = {
@@ -712,6 +737,8 @@ class Handler(BaseHTTPRequestHandler):
             "calls": traced_calls(),
         })
         log_event(record)
+        if titler:
+            titler.join(timeout=5)
         with lock:
             if reply and reply.get("full_answer"):
                 chat["answers_used"] += 1
