@@ -278,6 +278,7 @@ button {
   width: 100%;
   max-width: 760px;
   margin: 0 auto;
+  padding: 0 8px;
   display: flex;
   flex-direction: column;
   gap: 28px;
