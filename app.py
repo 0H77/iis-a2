@@ -77,6 +77,22 @@ CHECK_PROMPT = (
     'Respond with JSON only: {{"revealed": true or false, "broke_rule": true or false}}.'
 )
 
+VALUES_PROMPT = (
+    "You read one reply from a study assistant before the student sees it. Do not judge whether the reply is correct.\n"
+    "The student's rule: {rule}\n"
+    "Question being worked on: {question}\n"
+    "The question asks for these quantities, numbered: {names}\n"
+    "Return JSON only, with these fields:\n"
+    'values: a list of {{"quantity": <number of the quantity in the list above>, "value": ...}}, one entry for every '
+    "value the reply states for one of the quantities listed above. Copy the value as the reply writes it. Leave "
+    "out formulas without a value, and leave out values that belong to other things, such as numbers given in the "
+    "question or intermediate steps. Use an empty list if there are none.\n"
+    "broke_rule: apart from stating answers, did the reply break the student's rule as they wrote it? Judge strictly "
+    "against the rule's own wording. If the rule only limits answers, hints and explanations do not break it. If the "
+    "rule rules out hints, naming the method or steps to solve the problem breaks it. If the rule rules out help, any "
+    "explanation or guidance breaks it."
+)
+
 REWRITE_PROMPT = (
     "Rewrite a study assistant's draft reply so it keeps the student's rule: {rule}\n"
     "Question being worked on: {question}\n"
@@ -328,22 +344,31 @@ def same(key, found, decimals):
     return abs(key - found) <= 1e-6 * max(1.0, abs(key))
 
 
-def key_values(question, chat):
-    if question["type"] != "calculation":
-        return []
-    values = []
-    collect(question["answer"], values)
-    known = [v for v, _ in numbers_in(question["question"])]
+def text_of(value):
+    if isinstance(value, dict):
+        return " ".join(text_of(v) for v in value.values())
+    if isinstance(value, list):
+        return " ".join(text_of(v) for v in value)
+    return str(value)
+
+
+def known_numbers(chat):
+    known = []
     for m in chat["messages"]:
         if m["role"] == "user" or m.get("full_answer"):
             known.extend(v for v, _ in numbers_in(m["text"]))
-    finals = []
-    for v, label in values:
-        if v in (0.0, 1.0) or any(same(v, k, None) for k in known):
-            continue
-        if not any(same(v, f, None) for f, _ in finals):
-            finals.append((v, label))
-    return finals
+    return known
+
+
+def field_matches(key_value, stated, known):
+    key_numbers = []
+    collect(key_value, key_numbers)
+    stated_numbers = [(v, d) for v, d in numbers_in(stated) if not any(same(v, k, None) for k in known)]
+    if key_numbers:
+        return any(same(k, v, d) for k, _ in key_numbers for v, d in stated_numbers)
+    key_text = " ".join(text_of(key_value).lower().split())
+    said = " ".join(stated.lower().split())
+    return bool(key_text) and bool(said) and (key_text in said or said in key_text)
 
 
 def option_leak(question, reply):
@@ -362,33 +387,10 @@ def option_leak(question, reply):
     return len(answer_text.split()) >= 3 and answer_text in text.lower()
 
 
-LABELLED_NUMBER = re.compile(
-    r"\b(?:node|step|stage|question|layer|part|row|column|col|box|line|pass|iteration|round|case|item|level)s?"
-    r"\s*#?\s*\d+(?:\s*(?:-|to|and|,)\s*\d+)*",
-    re.IGNORECASE,
-)
-LIST_MARKER = re.compile(r"^\s*(?:\d+[.)]|\(\d+\))\s+", re.MULTILINE)
-
-
-def strip_labels(text):
-    return LIST_MARKER.sub(" ", LABELLED_NUMBER.sub(" ", text))
-
-
-def code_check(question, chat, reply):
-    if not question:
-        return []
-    hits = []
-    found = numbers_in(strip_labels(reply))
-    for v, label in key_values(question, chat):
-        if any(same(v, f, d) for f, d in found):
-            name = (label or "answer").replace("_", " ")
-            if name == "table":
-                name = "weights"
-            if name not in hits:
-                hits.append(name)
-    if option_leak(question, reply) and "option" not in hits:
-        hits.append("option")
-    return hits
+def code_check(question, reply):
+    if question and option_leak(question, reply):
+        return ["option"]
+    return []
 
 
 def describe(question):
@@ -422,8 +424,40 @@ def rewrite(rule, question, chat, draft):
     return out.strip()
 
 
+def values_check(rule, question, chat, reply):
+    names = list(question["answer"].keys())
+    raw, _ = call_groq(CHECK_MODEL, [
+        {"role": "system", "content": VALUES_PROMPT.format(
+            rule=rule, question=question["question"], names="; ".join(f"{i}) {n}" for i, n in enumerate(names, 1)))},
+        {"role": "user", "content": f"Assistant's reply:\n{reply}"},
+    ], max_tokens=700, json_mode=True)
+    try:
+        listed = json.loads(raw)
+        items = listed.get("values") or []
+    except (json.JSONDecodeError, AttributeError):
+        return {"code": [], "revealed": True, "broke_rule": True}
+    known = known_numbers(chat)
+    hits = []
+    for item in items:
+        if isinstance(item, dict):
+            number, value = str(item.get("quantity", "")), str(item.get("value", ""))
+        else:
+            number, _, value = str(item).partition("=")
+        digits = re.sub(r"\D", "", number)
+        if not digits or not 1 <= int(digits) <= len(names):
+            continue
+        name = names[int(digits) - 1]
+        if field_matches(question["answer"][name], value, known):
+            label = "weights" if name == "table" else name.replace("_", " ")
+            if label not in hits:
+                hits.append(label)
+    return {"code": hits, "revealed": bool(hits), "broke_rule": bool(listed.get("broke_rule"))}
+
+
 def check(rule, question, chat, reply):
-    hits = code_check(question, chat, reply)
+    if question and question["type"] == "calculation":
+        return values_check(rule, question, chat, reply)
+    hits = code_check(question, reply)
     if hits:
         return {"code": hits, "revealed": True, "broke_rule": False}
     verdict = model_check(rule, question, chat, reply)
