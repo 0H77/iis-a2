@@ -359,7 +359,7 @@ function rewriteNote(message, index) {
   }
   const why = document.createElement("span");
   why.textContent = reason.code.length
-    ? "It matched the answer key and broke your rule, so it was rewritten."
+    ? (reason.broke_rule ? "It matched the answer key and broke your rule, so it was rewritten." : "It matched the answer key, so it was rewritten.")
     : reason.revealed
       ? "The checker judged that it revealed the answer, so it was rewritten."
       : "The checker judged that it broke your rule, so it was rewritten.";
@@ -579,6 +579,10 @@ function closeDialog() {
   els.input.focus();
 }
 
+const welcome = document.querySelector(".welcome");
+const GREETINGS = ["What can I help with?", "Where should we start?", "What's on your mind?", "What are we working on?"];
+let wasEmpty = false;
+
 function render(state, options = {}) {
   current = state.current;
   renderRecentFiles(state.recent_files || []);
@@ -597,6 +601,8 @@ function render(state, options = {}) {
 
   const empty = current.messages.length === 0 && !options.pending;
   els.main.classList.toggle("empty", empty);
+  if (empty && !wasEmpty) welcome.textContent = GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
+  wasEmpty = empty;
   els.input.placeholder = empty ? "Ask anything" : "Reply";
   if (empty) els.newChat.setAttribute("aria-current", "page");
   else els.newChat.removeAttribute("aria-current");
