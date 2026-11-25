@@ -580,7 +580,7 @@ function closeDialog() {
 }
 
 const welcome = document.querySelector(".welcome");
-const GREETINGS = ["What can I help with?", "Where should we start?", "What's on your mind?", "What are we working on?"];
+const GREETINGS = ["What are we revising?", "What can I help with?", "Where should we start?", "What's on your mind?", "What are we working on?"];
 let wasEmpty = false;
 
 function render(state, options = {}) {
