@@ -668,10 +668,58 @@ els.fileInput.addEventListener("change", async () => {
   attach({ kind: "upload", name: file.name, content: text.slice(0, UPLOAD_LIMIT) });
 });
 
+const confirmAnswer = document.getElementById("confirm-answer");
+let displayTransition;
+
+function canTransitionDisplay() {
+  if (displayTransition !== undefined) return displayTransition;
+  if (!window.CSS?.supports?.("transition-behavior", "allow-discrete")) return (displayTransition = false);
+  const probe = document.createElement("div");
+  probe.style.cssText = "transition: display 1s allow-discrete !important; display: block;";
+  document.body.appendChild(probe);
+  getComputedStyle(probe).display;
+  probe.style.display = "none";
+  displayTransition = getComputedStyle(probe).display === "block";
+  probe.remove();
+  return displayTransition;
+}
+
+async function closeTopLayer(dialog, value) {
+  if (!(window.CSS?.supports?.("overlay", "auto") && canTransitionDisplay())) {
+    dialog.setAttribute("data-closing", "");
+    const animations = dialog.getAnimations({ subtree: true });
+    if (animations.length) {
+      await Promise.race([Promise.allSettled(animations.map((a) => a.finished)), new Promise((r) => setTimeout(r, 2000))]);
+    }
+    dialog.removeAttribute("data-closing");
+  }
+  dialog.close(value);
+}
+
+confirmAnswer.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeTopLayer(confirmAnswer, "");
+});
+
+confirmAnswer.querySelector("form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  closeTopLayer(confirmAnswer, event.submitter?.value || "");
+});
+
+confirmAnswer.addEventListener("close", () => {
+  const choice = confirmAnswer.returnValue;
+  confirmAnswer.returnValue = "";
+  if (choice === "use" && !waiting) runTurn("/api/use-answer", {});
+});
+
 els.menuAnswer.addEventListener("click", () => {
   if (els.menuAnswer.disabled || waiting) return;
   closeMenu();
-  runTurn("/api/use-answer", {});
+  const left = current.answers_left - 1;
+  document.getElementById("confirm-text").textContent =
+    `This shows the full worked answer. You'll have ${left} of ${current.answers_allowed} left.`;
+  confirmAnswer.returnValue = "";
+  confirmAnswer.showModal();
 });
 els.rule.addEventListener("input", updateStart);
 els.ruleCancel.addEventListener("click", closeDialog);

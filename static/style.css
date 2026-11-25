@@ -978,7 +978,90 @@ button {
   }
 }
 
+.confirm {
+  width: min(400px, calc(100% - 32px));
+  margin: auto;
+  padding: 24px;
+  background: #26282D;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  opacity: 0;
+  transition-property: opacity, transform, display, overlay;
+  transition-duration: 150ms;
+  transition-timing-function: var(--ease-out);
+  transition-behavior: allow-discrete;
+}
+
+.confirm[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  transition-duration: 220ms;
+}
+
+.confirm[open]:not([data-closing]) {
+  opacity: 1;
+}
+
+@starting-style {
+  .confirm[open]:not([data-closing]) {
+    opacity: 0;
+  }
+}
+
+.confirm h1 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.confirm:modal {
+  overscroll-behavior: contain;
+}
+
+.confirm::backdrop {
+  overflow: hidden;
+  overscroll-behavior: contain;
+  background-color: rgba(0, 0, 0, 0);
+  transition-property: background-color, display, overlay;
+  transition-duration: 150ms;
+  transition-timing-function: var(--ease-out);
+  transition-behavior: allow-discrete;
+}
+
+.confirm[open]:not([data-closing])::backdrop {
+  background-color: rgba(0, 0, 0, 0.45);
+}
+
+@starting-style {
+  .confirm[open]:not([data-closing])::backdrop {
+    background-color: rgba(0, 0, 0, 0);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .confirm {
+    transform: scale(0.96);
+  }
+
+  .confirm[open]:not([data-closing]) {
+    transform: scale(1);
+  }
+
+  @starting-style {
+    .confirm[open]:not([data-closing]) {
+      transform: scale(0.96);
+    }
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .confirm,
+  .confirm::backdrop {
+    transition-duration: 100ms;
+  }
+
   .action:active,
   .new-chat:active,
   .recent button:active,

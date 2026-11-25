@@ -89,6 +89,17 @@
         </div>
       </section>
     </div>
+
+    <dialog class="confirm" id="confirm-answer" aria-labelledby="confirm-title" aria-describedby="confirm-text">
+      <div class="dialog-head">
+        <h1 id="confirm-title">Use an answer?</h1>
+        <p id="confirm-text"></p>
+      </div>
+      <form method="dialog" class="dialog-buttons">
+        <button value="cancel" class="button-secondary" autofocus>Cancel</button>
+        <button value="use" class="button-primary">Use answer</button>
+      </form>
+    </dialog>
   </main>
 </div>
 <script src="/static/app.js"></script>

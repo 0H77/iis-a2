@@ -504,11 +504,11 @@ def full_answer(chat):
         source = f"The question: {question['question']} Answer key: {json.dumps(question['answer'])}"
         if question.get("working"):
             source += f" Working: {question['working']}"
-        source += " Your final answer must match the answer key."
+        source += " Your final answer must match the answer key. Do not mention the answer key."
     else:
         source = "Answer the problem the student is currently working on."
     text, _ = call_groq(TUTOR_MODEL, [{"role": "system", "content": FULL_ANSWER_PROMPT.format(source=source)}]
-                        + context_messages(chat) + history_messages(chat))
+                        + context_messages(chat) + history_messages(chat), max_tokens=4000)
     return text.strip()
 
 
